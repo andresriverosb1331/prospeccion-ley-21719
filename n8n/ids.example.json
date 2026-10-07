@@ -1,0 +1,19 @@
+{
+  "_comentario": "Copia este archivo a n8n/ids.local.json (ignorado por git) y completa los IDs de tu instancia de n8n.",
+  "proyecto": "ID_DEL_PROYECTO_N8N",
+  "tabla_empresas": "ID_TABLA_EMPRESAS",
+  "tabla_corridas": "ID_TABLA_CORRIDAS",
+  "cred_gemini": "ID_CREDENCIAL_GEMINI",
+  "cred_sheets": "ID_CREDENCIAL_GOOGLE_SHEETS",
+  "wf_a": "ID_WORKFLOW_A",
+  "wf_b": "ID_WORKFLOW_B",
+  "wf_c": "ID_WORKFLOW_C",
+  "wf_d0": "ID_WORKFLOW_D0",
+  "wf_d": "ID_WORKFLOW_D",
+  "wf_e": "ID_WORKFLOW_E",
+  "wf_z": "ID_WORKFLOW_Z",
+  "planilla": "ID_PLANILLA_GOOGLE_SHEETS",
+  "tabla_sii": "ID_TABLA_SII_REFERENCIA",
+  "wf_a2": "ID_WORKFLOW_A2",
+  "wf_a3": "ID_WORKFLOW_A3"
+}

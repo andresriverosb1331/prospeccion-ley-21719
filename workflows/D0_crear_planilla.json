@@ -1,0 +1,65 @@
+{
+  "name": "D0 · Crear planilla",
+  "nodes": [
+    {
+      "name": "Crear planilla (una vez)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Crear planilla de prospección",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "resource": "spreadsheet",
+        "operation": "create",
+        "authentication": "oAuth2",
+        "title": "prospeccion-ley-21719 · Prospección en frío (demo)",
+        "sheetsUi": {
+          "sheetValues": [
+            {
+              "title": "Calificadas"
+            },
+            {
+              "title": "Revision humana"
+            }
+          ]
+        },
+        "options": {
+          "locale": "es_CL"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "<tu credencial googleSheetsOAuth2Api>"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Crear planilla (una vez)": {
+      "main": [
+        [
+          {
+            "node": "Crear planilla de prospección",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  }
+}

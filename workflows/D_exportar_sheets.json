@@ -1,0 +1,642 @@
+{
+  "name": "D · Exportar a Google Sheets",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Iniciar exportación",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "ID_PLANILLA"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Calificadas"
+        }
+      },
+      "name": "Limpiar Calificadas",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        240,
+        304
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "<tu credencial googleSheetsOAuth2Api>"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "name": "Llamado desde orquestador",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "ID_PLANILLA"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Revision humana"
+        }
+      },
+      "name": "Limpiar Revisión humana",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        464,
+        304
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "<tu credencial googleSheetsOAuth2Api>"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "estado",
+              "keyValue": "calificada"
+            },
+            {
+              "keyName": "estado",
+              "keyValue": "revision"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "name": "Leer calificadas y en revisión",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        752,
+        272
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Preparar filas\" (workflow D). Una fila legible por empresa calificada o en revisión.\nconst SENALES_LEGIBLES = [\n  ['politica_privacidad', 'tiene política de privacidad', 'sin política de privacidad'],\n  ['menciona_ley_nueva', 'cita la Ley 21.719', null],\n  ['politica_plantilla', 'política = plantilla genérica', null],\n  ['banner_cookies', 'banner de cookies', null],\n  ['trackers', 'usa trackers', null],\n  ['formularios_datos', 'formularios con datos personales', null],\n  ['login', 'login visible', null],\n  ['tienda_online', 'tienda online operando', null],\n  ['agenda_online', 'agenda online', null],\n  ['sitio_minimo', 'sitio mínimo / en construcción', null],\n];\n\nreturn $input.all()\n  .map((item) => item.json)\n  .filter((e) => e.id && (e.estado === 'calificada' || e.estado === 'revision'))\n  .sort((a, b) => (b.score || 0) - (a.score || 0))\n  .map((e) => {\n    let s = {};\n    try { s = JSON.parse(e.senales_json || '{}'); } catch (err) { s = {}; }\n    s.politica_plantilla = Boolean(s.politica_origen && s.politica_origen !== 'propia');\n    const senales = SENALES_LEGIBLES\n      .map(([clave, si, no]) => (s[clave] ? si : no))\n      .filter(Boolean)\n      .join(' · ');\n    return {\n      json: {\n        hoja: e.estado === 'calificada' ? 'Calificadas' : 'Revision humana',\n        Empresa: e.razon_social,\n        RUT: e.rut,\n        Sitio: e.dominio ? 'https://' + e.dominio + '/' : '',\n        Comuna: e.comuna,\n        Fuente: e.fuente_lista || 'Registro de Empresas y Sociedades',\n        Tamano: e.tamano || '',\n        Rubro: e.rubro,\n        Score: e.score,\n        Segmento: e.segmento,\n        Confianza: e.confianza,\n        Motivo: e.motivo,\n        Evidencia: e.evidencia_url,\n        Senales: senales,\n        Observacion: e.error || '',\n        Actualizado: new Date().toISOString().slice(0, 10),\n      },\n    };\n  });\n"
+      },
+      "name": "Preparar filas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.hoja }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "Calificadas"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "¿Calificada?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1152,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "ID_PLANILLA"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Calificadas"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "schema": [
+            {
+              "id": "Empresa",
+              "displayName": "Empresa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "RUT",
+              "displayName": "RUT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Sitio",
+              "displayName": "Sitio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Comuna",
+              "displayName": "Comuna",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Fuente",
+              "displayName": "Fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Tamano",
+              "displayName": "Tamano",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Rubro",
+              "displayName": "Rubro",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Segmento",
+              "displayName": "Segmento",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confianza",
+              "displayName": "Confianza",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Motivo",
+              "displayName": "Motivo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Evidencia",
+              "displayName": "Evidencia",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Senales",
+              "displayName": "Senales",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Observacion",
+              "displayName": "Observacion",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Actualizado",
+              "displayName": "Actualizado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "handlingExtraData": "ignoreIt"
+        }
+      },
+      "name": "Escribir Calificadas",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1344,
+        208
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "<tu credencial googleSheetsOAuth2Api>"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "ID_PLANILLA"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Revision humana"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "schema": [
+            {
+              "id": "Empresa",
+              "displayName": "Empresa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "RUT",
+              "displayName": "RUT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Sitio",
+              "displayName": "Sitio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Comuna",
+              "displayName": "Comuna",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Fuente",
+              "displayName": "Fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Tamano",
+              "displayName": "Tamano",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Rubro",
+              "displayName": "Rubro",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Segmento",
+              "displayName": "Segmento",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confianza",
+              "displayName": "Confianza",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Motivo",
+              "displayName": "Motivo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Evidencia",
+              "displayName": "Evidencia",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Senales",
+              "displayName": "Senales",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Observacion",
+              "displayName": "Observacion",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Actualizado",
+              "displayName": "Actualizado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "handlingExtraData": "ignoreIt"
+        }
+      },
+      "name": "Escribir Revisión humana",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1344,
+        400
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "<tu credencial googleSheetsOAuth2Api>"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## D · Exportar a Google Sheets\nReescribe la planilla completa desde la tabla `empresas` (fuente de verdad): pestaña **Calificadas** para el equipo comercial y **Revision humana** para lo dudoso. Antes de usarlo: ejecutar `D0 · Crear planilla` y elegir el documento en los 4 nodos de Sheets.",
+        "height": 200,
+        "width": 560,
+        "color": 3
+      },
+      "name": "Sticky Note d7d597ab",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/ID_PLANILLA/values:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"valueInputOption\": \"RAW\", \"data\": [{\"range\": \"Calificadas!A1:O1\", \"values\": [[\"Empresa\", \"RUT\", \"Sitio\", \"Comuna\", \"Fuente\", \"Tamano\", \"Rubro\", \"Score\", \"Segmento\", \"Confianza\", \"Motivo\", \"Evidencia\", \"Senales\", \"Observacion\", \"Actualizado\"]]}, {\"range\": \"'Revision humana'!A1:O1\", \"values\": [[\"Empresa\", \"RUT\", \"Sitio\", \"Comuna\", \"Fuente\", \"Tamano\", \"Rubro\", \"Score\", \"Segmento\", \"Confianza\", \"Motivo\", \"Evidencia\", \"Senales\", \"Observacion\", \"Actualizado\"]]}]}",
+        "options": {}
+      },
+      "name": "Escribir encabezados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        576,
+        464
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "<tu credencial googleSheetsOAuth2Api>"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Iniciar exportación": {
+      "main": [
+        [
+          {
+            "node": "Limpiar Calificadas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limpiar Calificadas": {
+      "main": [
+        [
+          {
+            "node": "Limpiar Revisión humana",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Llamado desde orquestador": {
+      "main": [
+        [
+          {
+            "node": "Limpiar Calificadas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer calificadas y en revisión": {
+      "main": [
+        [
+          {
+            "node": "Preparar filas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar filas": {
+      "main": [
+        [
+          {
+            "node": "¿Calificada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Calificada?": {
+      "main": [
+        [
+          {
+            "node": "Escribir Calificadas",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escribir Revisión humana",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limpiar Revisión humana": {
+      "main": [
+        [
+          {
+            "node": "Escribir encabezados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escribir encabezados": {
+      "main": [
+        [
+          {
+            "node": "Leer calificadas y en revisión",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate"
+  }
+}

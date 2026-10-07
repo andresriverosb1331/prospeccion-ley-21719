@@ -1,0 +1,152 @@
+{
+  "name": "Z · Registro de errores",
+  "nodes": [
+    {
+      "name": "Cuando un workflow falla",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Armar fila de error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Nodo \"Armar fila de error\" (workflow Z · Registro de errores). Recibe la salida del Error Trigger.\nconst d = $input.first().json;\nconst ejecucion = d.execution || {};\nconst flujo = d.workflow || {};\nconst mensaje = String((ejecucion.error && ejecucion.error.message) || 'sin mensaje').slice(0, 300);\nconst ahora = new Date().toISOString();\nreturn [{\n  json: {\n    run_id: 'exec-' + (ejecucion.id || 'desconocida'),\n    etapa: 'error',\n    inicio: ahora,\n    fin: ahora,\n    errores: 1,\n    nota: (flujo.name || 'workflow desconocido') + ' | nodo: ' + (ejecucion.lastNodeExecuted || '?') + ' | ' + mensaje,\n  },\n}];\n"
+      }
+    },
+    {
+      "name": "Registrar error",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_CORRIDAS",
+          "cachedResultName": "corridas"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "etapa",
+              "displayName": "etapa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "inicio",
+              "displayName": "inicio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fin",
+              "displayName": "fin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "errores",
+              "displayName": "errores",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nota",
+              "displayName": "nota",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Sticky Note d4978983",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        80
+      ],
+      "parameters": {
+        "content": "## Z · Registro de errores\nWorkflow de error compartido por A, B, C, D y E: cada ejecución de producción que falla deja una fila `etapa=error` en la tabla `corridas` con el workflow, el nodo y el mensaje.",
+        "color": 2,
+        "width": 520,
+        "height": 160
+      }
+    }
+  ],
+  "connections": {
+    "Cuando un workflow falla": {
+      "main": [
+        [
+          {
+            "node": "Armar fila de error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar fila de error": {
+      "main": [
+        [
+          {
+            "node": "Registrar error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  }
+}

@@ -1,0 +1,571 @@
+{
+  "name": "E · Orquestador del pipeline",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Iniciar pipeline",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e-run",
+              "name": "run_id",
+              "value": "={{ \"run-\" + $now.toFormat(\"yyyyLLdd-HHmmss\") }}",
+              "type": "string"
+            },
+            {
+              "id": "e-lim",
+              "name": "limite",
+              "value": 50,
+              "type": "number"
+            },
+            {
+              "id": "e-fue",
+              "name": "fuente",
+              "value": "regulados",
+              "type": "string"
+            },
+            {
+              "id": "e-ini",
+              "name": "inicio",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Parámetros E",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "WORKFLOW_A_INGESTA",
+          "cachedResultName": "A · Ingesta RES"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "name": "Ejecutar A · Ingesta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        448,
+        304
+      ],
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cb-run",
+              "name": "run_id",
+              "value": "={{ $(\"Parámetros E\").first().json.run_id }}",
+              "type": "string"
+            },
+            {
+              "id": "cb-lim",
+              "name": "limite",
+              "value": "={{ $(\"Parámetros E\").first().json.limite }}",
+              "type": "number"
+            },
+            {
+              "id": "cb-rep",
+              "name": "reprocesar",
+              "value": false,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Contexto B",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        672,
+        304
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "WORKFLOW_B_ENRIQUECIMIENTO",
+          "cachedResultName": "B · Dominio y enriquecimiento"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "name": "Ejecutar B · Enriquecimiento",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        880,
+        304
+      ],
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cc-run",
+              "name": "run_id",
+              "value": "={{ $(\"Parámetros E\").first().json.run_id }}",
+              "type": "string"
+            },
+            {
+              "id": "cc-lim",
+              "name": "limite",
+              "value": "={{ $(\"Parámetros E\").first().json.limite }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Contexto C",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1104,
+        304
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "WORKFLOW_C_CALIFICACION",
+          "cachedResultName": "C · Calificación con IA"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "name": "Ejecutar C · Calificación",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        1328,
+        304
+      ],
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cd-run",
+              "name": "run_id",
+              "value": "={{ $(\"Parámetros E\").first().json.run_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Contexto D",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1552,
+        304
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "WORKFLOW_D_EXPORTAR_SHEETS",
+          "cachedResultName": "D · Exportar a Google Sheets"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "name": "Ejecutar D · Sheets",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        1760,
+        304
+      ],
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Resumen del pipeline\" (workflow E). Una fila en `corridas` con el estado de cada etapa.\n// Las etapas de ingesta son alternativas (RES o regulados): la que no corresponde queda \"omitida\".\nconst p = $('Parámetros E').first().json;\nconst ETAPAS = [\n  ['ingesta', 'Ejecutar A · Ingesta', true],\n  ['ingesta_regulados', 'Ejecutar A2 · Regulados', true],\n  ['cruce_sii', 'Ejecutar A3 · Cruce SII', true],\n  ['enriquecimiento', 'Ejecutar B · Enriquecimiento', false],\n  ['calificacion', 'Ejecutar C · Calificación', false],\n  ['sheets', 'Ejecutar D · Sheets', false],\n];\n\nconst estado = ETAPAS.map(([etapa, nodo, opcional]) => {\n  let salida;\n  try {\n    salida = $(nodo).first().json || {};\n  } catch (e) {\n    return { etapa, ok: opcional, omitida: opcional, error: opcional ? '' : 'no se ejecutó' };\n  }\n  const err = salida.error;\n  return { etapa, ok: !err, omitida: false, error: err ? String(err.message || err).slice(0, 200) : '' };\n});\n\nconst fallos = estado.filter((e) => !e.ok);\nreturn [{\n  json: {\n    run_id: p.run_id,\n    etapa: 'pipeline',\n    inicio: p.inicio,\n    fin: new Date().toISOString(),\n    errores: fallos.length,\n    nota: 'fuente=' + (p.fuente || 'res') + ' | ' + estado\n      .filter((e) => !e.omitida)\n      .map((e) => e.etapa + '=' + (e.ok ? 'ok' : 'FALLO(' + e.error + ')')).join(' | '),\n  },\n}];\n"
+      },
+      "name": "Resumen del pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1984,
+        304
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_CORRIDAS",
+          "cachedResultName": "corridas"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "etapa",
+              "displayName": "etapa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "inicio",
+              "displayName": "inicio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fin",
+              "displayName": "fin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "errores",
+              "displayName": "errores",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nota",
+              "displayName": "nota",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Registrar corrida del pipeline",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2208,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## E · Orquestador\nEjecuta A → B → C → D con un mismo `run_id`. Si una etapa falla, el pipeline sigue con lo que hay en la tabla `empresas` y el fallo queda en la fila `etapa=pipeline` de `corridas`. Ajusta el tamaño del lote en **Parámetros E**.",
+        "height": 180,
+        "width": 560,
+        "color": 7
+      },
+      "name": "Sticky Note 2e70942d",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -48,
+        -96
+      ]
+    },
+    {
+      "name": "¿Fuente regulados?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        330,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.fuente }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "regulados"
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "name": "Ejecutar A2 · Regulados",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        440,
+        140
+      ],
+      "parameters": {
+        "mode": "once",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "WORKFLOW_A2_REGULADOS",
+          "cachedResultName": "A2 · Ingesta sectores regulados"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "onError": "continueRegularOutput",
+      "executeOnce": true
+    },
+    {
+      "name": "Ejecutar A3 · Cruce SII",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.4,
+      "position": [
+        550,
+        140
+      ],
+      "parameters": {
+        "mode": "once",
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "WORKFLOW_A3_CRUCE_SII",
+          "cachedResultName": "A3 · Cruce SII"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "onError": "continueRegularOutput",
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Iniciar pipeline": {
+      "main": [
+        [
+          {
+            "node": "Parámetros E",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar A · Ingesta": {
+      "main": [
+        [
+          {
+            "node": "Contexto B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contexto B": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar B · Enriquecimiento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar B · Enriquecimiento": {
+      "main": [
+        [
+          {
+            "node": "Contexto C",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contexto C": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar C · Calificación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar C · Calificación": {
+      "main": [
+        [
+          {
+            "node": "Contexto D",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contexto D": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar D · Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar D · Sheets": {
+      "main": [
+        [
+          {
+            "node": "Resumen del pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumen del pipeline": {
+      "main": [
+        [
+          {
+            "node": "Registrar corrida del pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parámetros E": {
+      "main": [
+        [
+          {
+            "node": "¿Fuente regulados?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Fuente regulados?": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar A2 · Regulados",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ejecutar A · Ingesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar A2 · Regulados": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar A3 · Cruce SII",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar A3 · Cruce SII": {
+      "main": [
+        [
+          {
+            "node": "Contexto B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate"
+  }
+}

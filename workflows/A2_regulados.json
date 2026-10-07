@@ -1,0 +1,733 @@
+{
+  "name": "A2 · Ingesta sectores regulados",
+  "nodes": [
+    {
+      "name": "Iniciar ingesta A2",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Parámetros A2",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a2-run",
+              "name": "run_id",
+              "value": "={{ $json.run_id || (\"run-\" + $now.toFormat(\"yyyyLLdd-HHmmss\")) }}",
+              "type": "string"
+            },
+            {
+              "id": "a2-ls",
+              "name": "limite_salud",
+              "value": "={{ $json.limite_salud ?? 40 }}",
+              "type": "number"
+            },
+            {
+              "id": "a2-lc",
+              "name": "limite_cmf",
+              "value": "={{ $json.limite_cmf ?? 40 }}",
+              "type": "number"
+            },
+            {
+              "id": "a2-ic",
+              "name": "incluir_cmf",
+              "value": "={{ $json.incluir_cmf ?? true }}",
+              "type": "boolean"
+            },
+            {
+              "id": "a2-ini",
+              "name": "inicio",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Llamado desde orquestador",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "name": "Leer empresas existentes",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Consultar CMF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.cmfchile.cl/institucional/estadisticas/seg_rgpsf_ajax.php?f=servFiltrosPLSQL&tipo=J&estado=VI",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "ProspeccionLey21719Bot/0.1 (respeta robots.txt)"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "tipo_busqueda",
+              "value": "J"
+            },
+            {
+              "name": "rut_ENT",
+              "value": ""
+            },
+            {
+              "name": "nombre_ENT",
+              "value": ""
+            },
+            {
+              "name": "servicio_ENT",
+              "value": ""
+            },
+            {
+              "name": "Estado",
+              "value": "VI"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "Listado nacional de Salud",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.superdesalud.gob.cl/tax-registros/registro-de-prestadores-acreditados-4329/nacional-4258/",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "ProspeccionLey21719Bot/0.1 (respeta robots.txt)"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "html"
+            }
+          }
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "name": "Elegir fichas de Salud",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Normalización de empresas chilenas. Este mismo código se pega en el nodo\n// Code del workflow A (n8n), así que se mantiene sin dependencias externas.\n\nconst PERSONA_JURIDICA_MIN = 50000000;\n\nconst SUFIJOS_SOCIETARIOS = [\n  'sociedad por acciones', 'sociedad anonima', 'sociedad de responsabilidad limitada',\n  'empresa individual de responsabilidad limitada', 'limitada', 'ltda', 'spa', 's a', 'sa',\n  'eirl', 'e i r l', 'y cia', 'y compania', 'cia',\n];\n\nfunction quitarTildes(texto) {\n  return texto.normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\n// Calcula el dígito verificador de un RUT con el algoritmo módulo 11.\nfunction calcularDV(cuerpo) {\n  let suma = 0;\n  let multiplicador = 2;\n  for (let i = cuerpo.length - 1; i >= 0; i--) {\n    suma += Number(cuerpo[i]) * multiplicador;\n    multiplicador = multiplicador === 7 ? 2 : multiplicador + 1;\n  }\n  const resto = 11 - (suma % 11);\n  if (resto === 11) return '0';\n  if (resto === 10) return 'K';\n  return String(resto);\n}\n\n// Devuelve { valido, cuerpo, dv, rut, personaJuridica } a partir de \"76.123.456-7\", \"761234567\", etc.\nfunction parseRut(entrada) {\n  const limpio = String(entrada ?? '').toUpperCase().replace(/[^0-9K]/g, '');\n  if (limpio.length < 2) return { valido: false };\n  const cuerpo = limpio.slice(0, -1);\n  const dv = limpio.slice(-1);\n  if (!/^\\d+$/.test(cuerpo)) return { valido: false };\n  const valido = calcularDV(cuerpo) === dv;\n  const numero = Number(cuerpo);\n  return {\n    valido,\n    cuerpo,\n    dv,\n    rut: `${numero}-${dv}`,\n    personaJuridica: numero >= PERSONA_JURIDICA_MIN,\n  };\n}\n\n// \"https://www.Empresa.cl/contacto?x=1\" -> \"empresa.cl\"\nfunction normalizarDominio(entrada) {\n  if (!entrada) return null;\n  let texto = String(entrada).trim().toLowerCase();\n  if (!texto) return null;\n  texto = texto.replace(/^[a-z]+:\\/\\//, '');\n  texto = texto.split(/[/?#]/)[0];\n  texto = texto.replace(/:\\d+$/, '');\n  texto = texto.replace(/^www\\d*\\./, '');\n  if (!/^[a-z0-9.-]+\\.[a-z]{2,}$/.test(texto)) return null;\n  return texto;\n}\n\n// \"Inversiones Pérez & Cía. Ltda.\" -> \"inversiones perez\"\nfunction normalizarRazonSocial(entrada) {\n  let texto = quitarTildes(String(entrada ?? '').toLowerCase());\n  texto = texto.replace(/&/g, ' y ');\n  texto = texto.replace(/[^a-z0-9ñ ]/g, ' ').replace(/\\s+/g, ' ').trim();\n  let cambio = true;\n  while (cambio) {\n    cambio = false;\n    for (const sufijo of SUFIJOS_SOCIETARIOS) {\n      if (texto === sufijo) continue;\n      if (texto.endsWith(' ' + sufijo)) {\n        texto = texto.slice(0, -(sufijo.length + 1)).trim();\n        cambio = true;\n      }\n    }\n  }\n  return texto;\n}\n\n// Clave para detectar duplicados: el RUT manda; si no hay RUT válido, el dominio; si no, el nombre.\nfunction dedupKey({ rut, dominio, razonSocial }) {\n  const r = parseRut(rut);\n  if (r.valido) return `rut:${r.rut}`;\n  const d = normalizarDominio(dominio);\n  if (d) return `dom:${d}`;\n  const n = normalizarRazonSocial(razonSocial);\n  return n ? `nom:${n}` : null;\n}\n\n// Palabras que describen el giro y no identifican a una empresa: no sirven solas como dominio\n// ni como prueba de que un sitio pertenece a la empresa.\nconst PALABRAS_GENERICAS = new Set([\n  'sociedad', 'inversiones', 'inversion', 'comercial', 'comercializadora', 'servicios', 'empresa',\n  'empresas', 'grupo', 'inmobiliaria', 'constructora', 'transportes', 'transporte', 'agricola',\n  'ingenieria', 'clinica', 'centro', 'chile', 'chilena', 'holding', 'asesorias', 'consultora',\n  'consultores', 'distribuidora', 'importadora', 'exportadora', 'gestion', 'desarrollo',\n  'proyectos', 'capital', 'negocios', 'compania', 'corporacion', 'spa', 'limitada', 'del', 'los',\n  'las', 'de', 'la', 'el', 'y', 'e', 'en', 'para', 'con',\n]);\n\nfunction palabrasDistintivas(razonSocial) {\n  return normalizarRazonSocial(razonSocial)\n    .replace(/ñ/g, 'n')\n    .split(' ')\n    .filter((p) => p.length >= 4 && !PALABRAS_GENERICAS.has(p));\n}\n\n// Candidatos de dominio a partir de la razón social:\n// \"Inversiones Club Exponencial SpA\" -> clubexponencial.cl, club-exponencial.cl, exponencial.cl, ...\nfunction candidatosDominio(razonSocial) {\n  const palabras = normalizarRazonSocial(razonSocial).replace(/ñ/g, 'n').split(' ').filter(Boolean);\n  const sinGiro = palabras.filter((p) => !PALABRAS_GENERICAS.has(p));\n  const slugs = new Set();\n  if (palabras.length) slugs.add(palabras.join(''));\n  if (sinGiro.length) {\n    slugs.add(sinGiro.join(''));\n    if (sinGiro.length > 1) slugs.add(sinGiro.join('-'));\n    if (sinGiro.length > 2) slugs.add(sinGiro.slice(0, 2).join(''));\n    if (sinGiro[0].length >= 5) slugs.add(sinGiro[0]);\n  }\n  const candidatos = [];\n  for (const slug of slugs) {\n    if (slug.length < 4 || slug.length > 40) continue;\n    candidatos.push(`${slug}.cl`, `${slug}.com`);\n  }\n  return candidatos.slice(0, 8);\n}\n\n// Parsers de las fuentes de la fase 2 (ver docs/fuentes-fase2.md) a un esquema común:\n// { rut, razon_social, rubro_fuente, sitio_fuente, tipo_fuente, fuente_lista, ref_fuente }\n// Sin dependencias: se antepone a los nodos Code de n8n junto con lib/normalize.js.\n\n// Etiquetas de la ficha de un prestador acreditado (Superintendencia de Salud), en orden.\n// Todo lo que viene desde \"Representante Legal\" son datos de una persona: no se extrae.\nconst ETIQUETAS_SALUD = ['N° de registro', 'Nombre', 'Rut', 'Dirección', 'Teléfono', 'Tipo de Establecimiento',\n  'Complejidad Asistencial', 'Propietario del Prestador', 'Página Web'];\nconst CORTE_PERSONA = /Representante Legal/i;\n\nfunction decodificarEntidades(texto) {\n  return String(texto || '')\n    .replace(/&hellip;/g, '…').replace(/&amp;/g, '&').replace(/&quot;/g, '\"').replace(/&#0?39;/g, \"'\")\n    .replace(/&aacute;/g, 'á').replace(/&eacute;/g, 'é').replace(/&iacute;/g, 'í').replace(/&oacute;/g, 'ó')\n    .replace(/&uacute;/g, 'ú').replace(/&ntilde;/g, 'ñ').replace(/&deg;/g, '°').replace(/&nbsp;/g, ' ');\n}\n\n// CMF: respuesta JSON del Registro de Prestadores de Servicios Financieros (personas jurídicas vigentes).\nfunction parseCmf(items) {\n  return (Array.isArray(items) ? items : [])\n    .filter((it) => it && it.per_rut && it.per_nombre)\n    .map((it) => {\n      const cuerpo = String(it.per_rut).replace(/\\D/g, '');\n      const servicios = Object.keys(it).filter((k) => /^per_serv_\\d+$/.test(k) && /autorizad/i.test(it[k])).length;\n      return {\n        rut: `${Number(cuerpo)}-${calcularDV(cuerpo)}`,\n        razon_social: String(it.per_nombre).trim(),\n        rubro_fuente: 'fintech_seguros',\n        sitio_fuente: '',\n        tipo_fuente: `Prestador Ley Fintec (${servicios} servicio${servicios === 1 ? '' : 's'} autorizado${servicios === 1 ? '' : 's'})`,\n        fuente_lista: 'CMF Registro Fintec',\n        ref_fuente: `cmf:${Number(cuerpo)}`,\n      };\n    });\n}\n\n// Salud: listado nacional de prestadores acreditados → [{ nombre, url }] (sin inscripciones canceladas).\nfunction parseListadoSalud(html) {\n  const vistos = new Set();\n  const salida = [];\n  const re = /<a[^>]+href=[\"'](https:\\/\\/www\\.superdesalud\\.gob\\.cl\\/registro\\/[a-z0-9-]+\\/?)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n  let m;\n  while ((m = re.exec(String(html || ''))) !== null) {\n    const url = m[1].endsWith('/') ? m[1] : m[1] + '/';\n    const nombre = decodificarEntidades(m[2].replace(/<[^>]+>/g, '')).replace(/\\s+/g, ' ').trim();\n    if (!nombre || /inscripci[oó]n cancelada/i.test(nombre) || vistos.has(url)) continue;\n    vistos.add(url);\n    salida.push({ nombre, url });\n  }\n  return salida;\n}\n\n// Salud: ficha de un prestador → esquema común. Lee la descripción estructurada de la página\n// (og:description) y corta antes de los datos del representante legal.\nfunction parseFichaSalud(html, url) {\n  const crudo = String(html || '');\n  const meta = crudo.match(/<meta[^>]+property=[\"']og:description[\"'][^>]+content=[\"']([^\"']*)[\"']/i);\n  let texto = decodificarEntidades(meta ? meta[1] : '').replace(/\\s+/g, ' ').trim();\n  const corte = texto.search(CORTE_PERSONA);\n  if (corte >= 0) texto = texto.slice(0, corte);\n  const campos = {};\n  const posiciones = ETIQUETAS_SALUD\n    .map((et) => ({ et, i: texto.indexOf(' ' + et + ' ') >= 0 ? texto.indexOf(' ' + et + ' ') + 1 : texto.indexOf(et + ' ') === 0 ? 0 : -1 }))\n    .filter((p) => p.i >= 0)\n    .sort((a, b) => a.i - b.i);\n  posiciones.forEach((p, k) => {\n    const fin = k + 1 < posiciones.length ? posiciones[k + 1].i : texto.length;\n    campos[p.et] = texto.slice(p.i + p.et.length, fin).replace(/\\[…\\]\\s*$/, '').trim();\n  });\n  const rut = parseRut(campos['Rut']);\n  if (!rut.valido || !rut.personaJuridica) return null;\n  const sitio = normalizarDominio((campos['Página Web'] || '').split(/\\s/)[0]);\n  const tipo = [campos['Tipo de Establecimiento'], campos['Complejidad Asistencial']].filter(Boolean).join(' · ');\n  return {\n    rut: rut.rut,\n    razon_social: campos['Propietario del Prestador'] || campos['Nombre'] || '',\n    nombre_comercial: campos['Nombre'] || '',\n    rubro_fuente: 'salud',\n    sitio_fuente: sitio || '',\n    tipo_fuente: tipo ? `Prestador acreditado: ${tipo}` : 'Prestador acreditado',\n    fuente_lista: 'Superintendencia de Salud',\n    ref_fuente: url,\n  };\n}\n\n// Tramo según ventas del SII → tamaño.\nfunction tamanoPorTramo(tramo) {\n  const t = Number(tramo);\n  if (!t || t === 1) return 'sin_info';\n  if (t <= 4) return 'micro';\n  if (t <= 7) return 'pequena';\n  if (t <= 9) return 'mediana';\n  return 'grande';\n}\n\n// Nodo \"Elegir fichas de Salud\" (workflow A2). Requiere lib/normalize.js, lib/fuentes.js\n// Del listado nacional toma las fichas que aún no están en `empresas` (por ref_fuente), hasta el límite.\nconst params = $('Parámetros A2').first().json;\nconst conocidas = new Set($('Leer empresas existentes').all().map((i) => i.json.ref_fuente).filter(Boolean));\nconst listado = parseListadoSalud($input.first().json.html || '');\nconst nuevas = listado.filter((p) => !conocidas.has(p.url)).slice(0, Number(params.limite_salud) || 0);\nconst meta = { listado_total: listado.length, ya_conocidas: listado.length - listado.filter((p) => !conocidas.has(p.url)).length };\n// Si no hay fichas nuevas se emite un marcador (la descarga falla sin URL y el flujo sigue con la CMF).\nif (nuevas.length === 0) return [{ json: { url: '', nombre: '', ...meta } }];\nreturn nuevas.map((p) => ({ json: { ...p, ...meta } }));\n"
+      }
+    },
+    {
+      "name": "Descargar ficha",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "ProspeccionLey21719Bot/0.1 (respeta robots.txt)"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1000
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "Unificar fuentes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Normalización de empresas chilenas. Este mismo código se pega en el nodo\n// Code del workflow A (n8n), así que se mantiene sin dependencias externas.\n\nconst PERSONA_JURIDICA_MIN = 50000000;\n\nconst SUFIJOS_SOCIETARIOS = [\n  'sociedad por acciones', 'sociedad anonima', 'sociedad de responsabilidad limitada',\n  'empresa individual de responsabilidad limitada', 'limitada', 'ltda', 'spa', 's a', 'sa',\n  'eirl', 'e i r l', 'y cia', 'y compania', 'cia',\n];\n\nfunction quitarTildes(texto) {\n  return texto.normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\n// Calcula el dígito verificador de un RUT con el algoritmo módulo 11.\nfunction calcularDV(cuerpo) {\n  let suma = 0;\n  let multiplicador = 2;\n  for (let i = cuerpo.length - 1; i >= 0; i--) {\n    suma += Number(cuerpo[i]) * multiplicador;\n    multiplicador = multiplicador === 7 ? 2 : multiplicador + 1;\n  }\n  const resto = 11 - (suma % 11);\n  if (resto === 11) return '0';\n  if (resto === 10) return 'K';\n  return String(resto);\n}\n\n// Devuelve { valido, cuerpo, dv, rut, personaJuridica } a partir de \"76.123.456-7\", \"761234567\", etc.\nfunction parseRut(entrada) {\n  const limpio = String(entrada ?? '').toUpperCase().replace(/[^0-9K]/g, '');\n  if (limpio.length < 2) return { valido: false };\n  const cuerpo = limpio.slice(0, -1);\n  const dv = limpio.slice(-1);\n  if (!/^\\d+$/.test(cuerpo)) return { valido: false };\n  const valido = calcularDV(cuerpo) === dv;\n  const numero = Number(cuerpo);\n  return {\n    valido,\n    cuerpo,\n    dv,\n    rut: `${numero}-${dv}`,\n    personaJuridica: numero >= PERSONA_JURIDICA_MIN,\n  };\n}\n\n// \"https://www.Empresa.cl/contacto?x=1\" -> \"empresa.cl\"\nfunction normalizarDominio(entrada) {\n  if (!entrada) return null;\n  let texto = String(entrada).trim().toLowerCase();\n  if (!texto) return null;\n  texto = texto.replace(/^[a-z]+:\\/\\//, '');\n  texto = texto.split(/[/?#]/)[0];\n  texto = texto.replace(/:\\d+$/, '');\n  texto = texto.replace(/^www\\d*\\./, '');\n  if (!/^[a-z0-9.-]+\\.[a-z]{2,}$/.test(texto)) return null;\n  return texto;\n}\n\n// \"Inversiones Pérez & Cía. Ltda.\" -> \"inversiones perez\"\nfunction normalizarRazonSocial(entrada) {\n  let texto = quitarTildes(String(entrada ?? '').toLowerCase());\n  texto = texto.replace(/&/g, ' y ');\n  texto = texto.replace(/[^a-z0-9ñ ]/g, ' ').replace(/\\s+/g, ' ').trim();\n  let cambio = true;\n  while (cambio) {\n    cambio = false;\n    for (const sufijo of SUFIJOS_SOCIETARIOS) {\n      if (texto === sufijo) continue;\n      if (texto.endsWith(' ' + sufijo)) {\n        texto = texto.slice(0, -(sufijo.length + 1)).trim();\n        cambio = true;\n      }\n    }\n  }\n  return texto;\n}\n\n// Clave para detectar duplicados: el RUT manda; si no hay RUT válido, el dominio; si no, el nombre.\nfunction dedupKey({ rut, dominio, razonSocial }) {\n  const r = parseRut(rut);\n  if (r.valido) return `rut:${r.rut}`;\n  const d = normalizarDominio(dominio);\n  if (d) return `dom:${d}`;\n  const n = normalizarRazonSocial(razonSocial);\n  return n ? `nom:${n}` : null;\n}\n\n// Palabras que describen el giro y no identifican a una empresa: no sirven solas como dominio\n// ni como prueba de que un sitio pertenece a la empresa.\nconst PALABRAS_GENERICAS = new Set([\n  'sociedad', 'inversiones', 'inversion', 'comercial', 'comercializadora', 'servicios', 'empresa',\n  'empresas', 'grupo', 'inmobiliaria', 'constructora', 'transportes', 'transporte', 'agricola',\n  'ingenieria', 'clinica', 'centro', 'chile', 'chilena', 'holding', 'asesorias', 'consultora',\n  'consultores', 'distribuidora', 'importadora', 'exportadora', 'gestion', 'desarrollo',\n  'proyectos', 'capital', 'negocios', 'compania', 'corporacion', 'spa', 'limitada', 'del', 'los',\n  'las', 'de', 'la', 'el', 'y', 'e', 'en', 'para', 'con',\n]);\n\nfunction palabrasDistintivas(razonSocial) {\n  return normalizarRazonSocial(razonSocial)\n    .replace(/ñ/g, 'n')\n    .split(' ')\n    .filter((p) => p.length >= 4 && !PALABRAS_GENERICAS.has(p));\n}\n\n// Candidatos de dominio a partir de la razón social:\n// \"Inversiones Club Exponencial SpA\" -> clubexponencial.cl, club-exponencial.cl, exponencial.cl, ...\nfunction candidatosDominio(razonSocial) {\n  const palabras = normalizarRazonSocial(razonSocial).replace(/ñ/g, 'n').split(' ').filter(Boolean);\n  const sinGiro = palabras.filter((p) => !PALABRAS_GENERICAS.has(p));\n  const slugs = new Set();\n  if (palabras.length) slugs.add(palabras.join(''));\n  if (sinGiro.length) {\n    slugs.add(sinGiro.join(''));\n    if (sinGiro.length > 1) slugs.add(sinGiro.join('-'));\n    if (sinGiro.length > 2) slugs.add(sinGiro.slice(0, 2).join(''));\n    if (sinGiro[0].length >= 5) slugs.add(sinGiro[0]);\n  }\n  const candidatos = [];\n  for (const slug of slugs) {\n    if (slug.length < 4 || slug.length > 40) continue;\n    candidatos.push(`${slug}.cl`, `${slug}.com`);\n  }\n  return candidatos.slice(0, 8);\n}\n\n// Extracción de señales de cumplimiento desde el HTML de un sitio y puntaje por reglas\n// (ver docs/icp-rubrica.md). Sin dependencias: se antepone a los nodos Code de n8n.\n\nconst DOMINIO_ESTACIONADO = /(domain (is )?for sale|este dominio (est[aá] )?(a la venta|disponible)|dominio en venta|parked (free|domain)|sedo\\.com|dan\\.com|hugedomains|godaddy\\.com\\/domainsearch|this domain is (registered|parked)|nic chile.*dominio|cuenta suspendida|account suspended|coming soon|sitio en construcci[oó]n|under construction)/i;\n\nconst TRACKERS = /(googletagmanager\\.com|google-analytics\\.com|gtag\\(|fbq\\(|connect\\.facebook\\.net|hotjar|clarity\\.ms|tiktok\\.com\\/i18n\\/pixel|analytics\\.tiktok|doubleclick\\.net|hs-scripts\\.com|linkedin\\.com\\/insight|snap\\.licdn)/i;\nconst BANNER_COOKIES = /(cookiebot|onetrust|cookieyes|cookie-law|cookielawinfo|complianz|cookie[-_ ]?consent|cookie[-_ ]?banner|aceptar (todas las )?cookies|usamos cookies|utilizamos cookies|este sitio (web )?utiliza cookies|pol[ií]tica de cookies)/i;\n// Señales de interacción: se buscan en el TEXTO VISIBLE (no en el código, donde un plugin\n// instalado y sin usar —woocommerce, vtex— o la palabra \"login\" de un script daban falsos positivos).\nconst LOGIN_TEXTO = /\\b(iniciar sesion|inicia sesion|mi cuenta|ingresa a tu cuenta|ingresar a tu cuenta|log ?in|sign in|acceso clientes|portal (de )?clientes|sucursal virtual)\\b/i;\nconst LOGIN_ENLACE = /href=[\"'][^\"']*(login|signin|sign-in|ingresar|mi-cuenta|my-account|\\/account|portal|sucursal)[^\"']*[\"']/i;\nconst TIENDA_TEXTO = /\\b(anadir al carrito|agregar al carro|agregar al carrito|comprar ahora|ver carrito|tu carrito|carro de compras|finalizar compra|ir a pagar)\\b/i;\nconst PRECIO = /\\$\\s?\\d{1,3}(?:[.,]\\d{3})+/g;  // $12.990 o $12,990 (Shopify)\nconst AGENDA_TEXTO = /\\b(agenda tu hora|reserva tu hora|reservar hora|agendar (una )?(hora|cita)|reserva online|agenda online)\\b/i;\nconst PLATAFORMA_TIENDA = /(woocommerce|shopify|jumpseller|vtex|prestashop|magento|bsale)/i;\nconst SITIO_MINIMO = /(coming soon|opening soon|proximamente|en construccion|under construction|just another wordpress site|sitio en mantenimiento|estamos trabajando en nuestro sitio)/i;\nconst ENLACE_POLITICA = /(privacidad|privacy|datos[-_ ]personales|proteccion[-_ ]de[-_ ]datos|protecci%c3%b3n|aviso[-_ ]legal|tratamiento[-_ ]de[-_ ]datos)/i;\nconst CONTACTO_PRIVACIDAD = /((privacidad|datos|dpo|protecciondedatos|datospersonales)@[a-z0-9.-]+\\.[a-z]{2,}|delegado de protecci[oó]n de datos|encargado de (la )?protecci[oó]n de datos|oficial de (protecci[oó]n de )?datos)/i;\n\nfunction quitarTildes(texto) {\n  return String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\nfunction textoVisible(html) {\n  return String(html || '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&[a-z]+;/gi, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction titulo(html) {\n  const m = String(html || '').match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);\n  return m ? textoVisible(m[1]) : '';\n}\n\n// Formularios que piden datos de personas (email, teléfono, RUT o nombre).\nfunction tieneFormularioDatos(html) {\n  const forms = String(html || '').match(/<form[\\s\\S]*?<\\/form>/gi) || [];\n  return forms.some((f) => /type=[\"']?(email|tel)|name=[\"']?[^\"'>]*(email|correo|telefono|phone|rut|nombre|name)/i.test(f));\n}\n\n// El nodo HTTP Request de n8n entrega el cuerpo en `body` o en `data` según la respuesta\n// (con fullResponse y responseFormat=text). Se lee siempre a través de esta función.\nfunction cuerpoRespuesta(r) {\n  if (!r) return null;\n  for (const valor of [r.body, r.data]) {\n    if (typeof valor === 'string') return valor;\n  }\n  return null;\n}\n\n// El sandbox del nodo Code de n8n no expone la clase global URL: parser mínimo propio.\nfunction partirUrl(url) {\n  const m = String(url || '').match(/^(https?):\\/\\/([^/?#]+)([^?#]*)/i);\n  if (!m) return null;\n  return { protocolo: m[1].toLowerCase(), host: m[2].toLowerCase().replace(/:\\d+$/, ''), ruta: m[3] || '/' };\n}\n\nfunction resolverUrl(href, baseUrl) {\n  const base = partirUrl(baseUrl);\n  const h = String(href || '').trim().split('#')[0];\n  if (!base || !h || /^(mailto|tel|javascript|data):/i.test(h)) return null;\n  if (/^https?:\\/\\//i.test(h)) return h;\n  if (h.startsWith('//')) return base.protocolo + ':' + h;\n  const origen = base.protocolo + '://' + base.host;\n  if (h.startsWith('/')) return origen + h;\n  const dir = base.ruta.replace(/[^/]*$/, '') || '/';\n  return origen + dir + h.replace(/^\\.\\//, '');\n}\n\n// Busca el primer enlace del mismo sitio cuyo href o texto apunte a la política de privacidad.\nfunction enlacePolitica(html, baseUrl) {\n  const re = /<a\\s[^>]*href=[\"']([^\"'#]+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n  const base = partirUrl(baseUrl);\n  if (!base) return null;\n  let m;\n  while ((m = re.exec(String(html || ''))) !== null) {\n    const href = m[1];\n    const texto = textoVisible(m[2]);\n    if (!ENLACE_POLITICA.test(href) && !ENLACE_POLITICA.test(quitarTildes(texto))) continue;\n    const url = resolverUrl(href, baseUrl);\n    const partes = partirUrl(url);\n    if (!partes || partes.host.replace(/^www\\./, '') !== base.host.replace(/^www\\./, '')) continue;\n    return url;\n  }\n  return null;\n}\n\n// Interpreta robots.txt para User-agent: * y devuelve las rutas prohibidas.\nfunction reglasRobots(texto) {\n  const lineas = String(texto || '').split(/\\r?\\n/).map((l) => l.replace(/#.*$/, '').trim());\n  const disallow = [];\n  let aplica = false;\n  let enGrupoAgentes = false;\n  for (const linea of lineas) {\n    const m = linea.match(/^([a-z-]+)\\s*:\\s*(.*)$/i);\n    if (!m) continue;\n    const campo = m[1].toLowerCase();\n    const valor = m[2].trim();\n    if (campo === 'user-agent') {\n      if (!enGrupoAgentes) aplica = false;\n      enGrupoAgentes = true;\n      if (valor === '*') aplica = true;\n    } else {\n      enGrupoAgentes = false;\n      if (aplica && campo === 'disallow' && valor) disallow.push(valor);\n    }\n  }\n  return disallow;\n}\n\nfunction rutaPermitida(disallow, ruta) {\n  return !disallow.some((d) => d === '/' || ruta.startsWith(d));\n}\n\n// Verifica que el HTML de un dominio candidato corresponda a la empresa.\n// `nombre` es la razón social normalizada (sin sufijos) y `palabras` sus palabras distintivas.\n// Reglas, de más a menos fuerte:\n//  - el sitio muestra el RUT de la empresa;\n//  - nombre de una sola palabra (una marca, ej. \"simelec\"): basta con que aparezca en el título;\n//  - nombre con varias palabras: la frase completa (o la de sus palabras distintivas, si son 2+)\n//    debe aparecer en el título o el texto. Una sola palabra suelta (\"gonzalez\", \"minera\") no basta.\n// Devuelve { ok, evidencia, puntos }.\nfunction verificarSitio(html, { rut, palabras, nombre = '' }) {\n  if (!html || html.length < 200) return { ok: false, evidencia: 'sin_contenido', puntos: 0 };\n  const visible = textoVisible(html);\n  const enVenta = /(is for sale|en venta|hugedomains|sedo|dan\\.com|afternic|domain parking|parked)/i.test(titulo(html));\n  if (enVenta || (DOMINIO_ESTACIONADO.test(visible.slice(0, 5000)) && visible.length < 4000)) {\n    return { ok: false, evidencia: 'estacionado', puntos: 0 };\n  }\n  const tit = quitarTildes(titulo(html).toLowerCase());\n  const cuerpo = quitarTildes(visible.toLowerCase());\n  const rutNum = String(rut || '').split('-')[0];\n  if (rutNum && rutNum.length >= 8) {\n    const rutConPuntos = rutNum.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.');\n    if (cuerpo.includes(rutNum) || cuerpo.includes(rutConPuntos)) return { ok: true, evidencia: 'rut', puntos: 3 };\n  }\n  const limpiar = (t) => ' ' + t.replace(/ñ/g, 'n').replace(/[^a-z0-9]+/g, ' ').trim() + ' ';\n  const titL = limpiar(tit);\n  const cuerpoL = limpiar(cuerpo);\n  const nombreL = limpiar(quitarTildes(String(nombre).toLowerCase())).trim();\n  const palabrasNombre = nombreL.split(' ').filter(Boolean);\n  if (palabrasNombre.length === 1 && palabras.length === 1 && palabras[0].length >= 5) {\n    if (titL.includes(' ' + palabras[0] + ' ')) return { ok: true, evidencia: 'marca_en_titulo', puntos: 2 };\n    return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n  }\n  const frases = [nombreL];\n  if (palabras.length >= 2) frases.push(palabras.join(' '));\n  for (const frase of frases) {\n    if (!frase || frase.split(' ').length < 2) continue;\n    if (titL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_titulo', puntos: 2 };\n    if (cuerpoL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_texto', puntos: 1 };\n  }\n  return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n}\n\n// Fragmento del texto alrededor de la coincidencia: queda como evidencia auditable de la señal.\nfunction fragmento(texto, re) {\n  const m = re.exec(texto);\n  re.lastIndex = 0;\n  if (!m) return null;\n  return texto.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40).trim();\n}\n\nfunction senalesHome(html, baseUrl) {\n  const visible = textoVisible(html);\n  const visibleSinTildes = quitarTildes(visible).toLowerCase();\n  const crudo = String(html || '');\n  const palabras = visible.split(' ').filter(Boolean).length;\n  const precios = (visible.match(PRECIO) || []).length;\n\n  // \"Próximamente\" en un menú no hace mínimo a un sitio con contenido: solo cuenta en el título o en sitios pequeños.\n  const avisoEnConstruccion = SITIO_MINIMO.test(quitarTildes(titulo(html))) ||\n    (palabras < 400 && SITIO_MINIMO.test(quitarTildes(visible.slice(0, 3000))));\n  const minimo = palabras < 150 || avisoEnConstruccion;\n  const tienePassword = /type=[\"']?password/i.test(crudo);\n  // En un sitio mínimo el \"iniciar sesión\" suele ser el acceso del dueño (p. ej. tienda Shopify cerrada).\n  const login = !minimo && LOGIN_TEXTO.test(visibleSinTildes) && (tienePassword || LOGIN_ENLACE.test(crudo));\n  const textoTienda = TIENDA_TEXTO.test(visibleSinTildes);\n  // Una tienda cuenta solo si se ve operando: botón de carrito/compra y al menos 2 precios, y no es un sitio \"próximamente\".\n  const tienda = textoTienda && precios >= 2 && !minimo;\n  const agenda = AGENDA_TEXTO.test(visibleSinTildes);\n  const formularios = tieneFormularioDatos(crudo);\n\n  return {\n    sitio_activo: true,\n    sitio_minimo: minimo,\n    palabras_visibles: palabras,\n    titulo: titulo(html).slice(0, 120),\n    politica_url: enlacePolitica(html, baseUrl),\n    banner_cookies: BANNER_COOKIES.test(crudo),\n    trackers: TRACKERS.test(crudo),\n    formularios_datos: formularios,\n    login,\n    tienda_online: tienda,\n    agenda_online: agenda,\n    plataforma_tienda: (crudo.match(PLATAFORMA_TIENDA) || [null])[0],\n    contacto_privacidad: CONTACTO_PRIVACIDAD.test(crudo),\n    evidencias: {\n      login: login ? fragmento(visibleSinTildes, LOGIN_TEXTO) : null,\n      tienda_online: tienda ? fragmento(visibleSinTildes, TIENDA_TEXTO) : null,\n      agenda_online: agenda ? fragmento(visibleSinTildes, AGENDA_TEXTO) : null,\n      sitio_minimo: minimo ? (palabras < 150 ? palabras + ' palabras visibles' : fragmento(quitarTildes(titulo(html) + ' ' + visible), SITIO_MINIMO)) : null,\n    },\n    extracto: visible.slice(0, 1500),\n  };\n}\n\n// Términos propios del cuerpo de una política (no de un pie de página con el enlace \"Privacidad\").\nconst TERMINOS_POLITICA = [\n  /datos personales|informacion personal|personal information/, /tratamiento/, /finalidad|proposito|fines/,\n  /derechos?( de)? (acceso|rectificacion|cancelacion|oposicion|arco)|ejercer (sus|tus) derechos/,\n  /consentimiento/, /terceros|proveedores de servicios/, /conserva(cion|remos)|retencion|plazo/,\n  /cookies/, /seguridad de (la informacion|los datos|sus datos)/,\n];\n// Políticas generadas por la plataforma o por un generador: válidas, pero genéricas.\nconst PLANTILLA_PLATAFORMA = /(cuenta con tecnologia de shopify|con tecnologia de shopify|powered by shopify|esta tienda (funciona|esta alojada) (con|en) shopify|shopify inc)/;\nconst PLANTILLA_GENERADOR = /(termly|iubenda|privacypolicies\\.com|generador de (politicas|terminos)|termsfeed|freeprivacypolicy)/;\n\n// Rutas conocidas de la política según la plataforma del sitio (cuando la portada no la enlaza).\nconst RUTA_POLITICA_PLATAFORMA = {\n  shopify: '/policies/privacy-policy',\n};\n\nfunction senalesPolitica(html) {\n  const crudo = String(html || '');\n  const visible = quitarTildes(textoVisible(crudo)).toLowerCase();\n  if (!visible || visible.length < 300) return { politica_privacidad: false };\n  const encabezado = quitarTildes(titulo(crudo) + ' ' + ((crudo.match(/<h1[^>]*>([\\s\\S]*?)<\\/h1>/i) || [])[1] || '')).toLowerCase();\n  const tituloDePolitica = /(privacidad|privacy|datos personales|proteccion de datos|tratamiento de datos)/.test(encabezado);\n  const terminos = TERMINOS_POLITICA.filter((re) => re.test(visible)).length;\n  // Es una política si su título/H1 lo dice y el cuerpo usa al menos 3 términos propios de una.\n  const esPolitica = tituloDePolitica && terminos >= 3;\n  if (!esPolitica) return { politica_privacidad: false, politica_terminos: terminos };\n  // Año de la política: solo el que acompaña a \"actualización / vigencia / modificación\", nunca el \"© 2026\" del pie.\n  const fechas = [...visible.matchAll(/(actualiza\\w*|vigen\\w*|modifica\\w*|fecha de (entrada|publicacion)\\w*)[^.]{0,60}?\\b(20[12]\\d)\\b/g)]\n    .map((m) => Number(m[3])).filter((a) => a <= 2026);\n  const origen = PLANTILLA_PLATAFORMA.test(visible) ? 'plantilla_shopify'\n    : PLANTILLA_GENERADOR.test(visible) ? 'plantilla_generador' : 'propia';\n  return {\n    politica_privacidad: true,\n    politica_terminos: terminos,\n    politica_origen: origen,\n    menciona_ley_nueva: /21\\.?719/.test(visible),\n    menciona_ley_antigua: /19\\.?628/.test(visible),\n    politica_anio: fechas.length ? Math.max(...fechas) : null,\n    contacto_privacidad_politica: CONTACTO_PRIVACIDAD.test(visible),\n  };\n}\n\n// Puntaje por reglas SIN el componente de rubro (lo agrega la etapa de IA).\nfunction puntajeReglas(s, { capital, anioConstitucion, tamano, anioActual = 2026 }) {\n  let exposicion = 0;\n  if (s.formularios_datos) exposicion += 6;\n  if (s.login) exposicion += 6;\n  if (s.tienda_online) exposicion += 6;\n  if (s.agenda_online) exposicion += 6;\n  if (s.trackers) exposicion += 4;\n  exposicion = Math.min(exposicion, 20);\n\n  let brecha = 0;\n  if (!s.politica_privacidad) brecha += 20;\n  else if (!s.menciona_ley_nueva || (s.politica_anio && s.politica_anio < 2025)) brecha += 12;\n  // Una plantilla de la plataforma no está adaptada al negocio ni a la ley chilena: la tienda\n  // sigue siendo responsable de los datos de sus clientes aunque use Shopify.\n  if (s.politica_privacidad && s.politica_origen && s.politica_origen !== 'propia' && !s.menciona_ley_nueva) brecha += 4;\n  if (!s.contacto_privacidad && !s.contacto_privacidad_politica) brecha += 10;\n  if (s.trackers && !s.banner_cookies) brecha += 10;\n  brecha = Math.min(brecha, 40);\n\n  // Un sitio mínimo (landing vacía, \"próximamente\") no demuestra operación: no suma por sitio activo.\n  let viabilidad = s.sitio_activo && !s.sitio_minimo ? 5 : 0;\n  // Tamaño según ventas (SII) si existe; si no, el capital declarado como proxy.\n  if (tamano === 'grande' || tamano === 'mediana') viabilidad += 10;\n  else if (tamano === 'pequena') viabilidad += 5;\n  else if (capital >= 200000000) viabilidad += 10;\n  else if (capital >= 50000000) viabilidad += 5;\n  if (anioConstitucion && anioActual - anioConstitucion >= 5) viabilidad += 5;\n  viabilidad = Math.min(viabilidad, 20);\n\n  return { exposicion_sin_rubro: exposicion, brecha, viabilidad, total_sin_rubro: exposicion + brecha + viabilidad };\n}\n\nconst PUNTOS_RUBRO = {\n  salud: 20, fintech_seguros: 20, educacion: 20, rrhh: 20,\n  retail_ecommerce: 14, saas_tecnologia: 14, inmobiliario: 14, marketing: 14,\n  otro: 5,\n};\n\n// Puntaje final: reglas + rubro (topado a 40 en exposición) + ajuste de la IA (±15), en 0..100.\nfunction puntajeFinal(reglas, rubro, ajuste) {\n  const puntosRubro = PUNTOS_RUBRO[rubro] ?? 5;\n  const exposicion = Math.min(reglas.exposicion_sin_rubro + puntosRubro, 40);\n  const ajusteAcotado = Math.max(-15, Math.min(15, Number(ajuste) || 0));\n  const total = exposicion + reglas.brecha + reglas.viabilidad + ajusteAcotado;\n  return Math.max(0, Math.min(100, Math.round(total)));\n}\n\nfunction estadoPorPuntaje(score, confianza) {\n  if (Number(confianza) < 0.6) return 'revision';\n  if (score >= 70) return 'calificada';\n  if (score >= 40) return 'revision';\n  return 'descartada';\n}\n\n// Parsers de las fuentes de la fase 2 (ver docs/fuentes-fase2.md) a un esquema común:\n// { rut, razon_social, rubro_fuente, sitio_fuente, tipo_fuente, fuente_lista, ref_fuente }\n// Sin dependencias: se antepone a los nodos Code de n8n junto con lib/normalize.js.\n\n// Etiquetas de la ficha de un prestador acreditado (Superintendencia de Salud), en orden.\n// Todo lo que viene desde \"Representante Legal\" son datos de una persona: no se extrae.\nconst ETIQUETAS_SALUD = ['N° de registro', 'Nombre', 'Rut', 'Dirección', 'Teléfono', 'Tipo de Establecimiento',\n  'Complejidad Asistencial', 'Propietario del Prestador', 'Página Web'];\nconst CORTE_PERSONA = /Representante Legal/i;\n\nfunction decodificarEntidades(texto) {\n  return String(texto || '')\n    .replace(/&hellip;/g, '…').replace(/&amp;/g, '&').replace(/&quot;/g, '\"').replace(/&#0?39;/g, \"'\")\n    .replace(/&aacute;/g, 'á').replace(/&eacute;/g, 'é').replace(/&iacute;/g, 'í').replace(/&oacute;/g, 'ó')\n    .replace(/&uacute;/g, 'ú').replace(/&ntilde;/g, 'ñ').replace(/&deg;/g, '°').replace(/&nbsp;/g, ' ');\n}\n\n// CMF: respuesta JSON del Registro de Prestadores de Servicios Financieros (personas jurídicas vigentes).\nfunction parseCmf(items) {\n  return (Array.isArray(items) ? items : [])\n    .filter((it) => it && it.per_rut && it.per_nombre)\n    .map((it) => {\n      const cuerpo = String(it.per_rut).replace(/\\D/g, '');\n      const servicios = Object.keys(it).filter((k) => /^per_serv_\\d+$/.test(k) && /autorizad/i.test(it[k])).length;\n      return {\n        rut: `${Number(cuerpo)}-${calcularDV(cuerpo)}`,\n        razon_social: String(it.per_nombre).trim(),\n        rubro_fuente: 'fintech_seguros',\n        sitio_fuente: '',\n        tipo_fuente: `Prestador Ley Fintec (${servicios} servicio${servicios === 1 ? '' : 's'} autorizado${servicios === 1 ? '' : 's'})`,\n        fuente_lista: 'CMF Registro Fintec',\n        ref_fuente: `cmf:${Number(cuerpo)}`,\n      };\n    });\n}\n\n// Salud: listado nacional de prestadores acreditados → [{ nombre, url }] (sin inscripciones canceladas).\nfunction parseListadoSalud(html) {\n  const vistos = new Set();\n  const salida = [];\n  const re = /<a[^>]+href=[\"'](https:\\/\\/www\\.superdesalud\\.gob\\.cl\\/registro\\/[a-z0-9-]+\\/?)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n  let m;\n  while ((m = re.exec(String(html || ''))) !== null) {\n    const url = m[1].endsWith('/') ? m[1] : m[1] + '/';\n    const nombre = decodificarEntidades(m[2].replace(/<[^>]+>/g, '')).replace(/\\s+/g, ' ').trim();\n    if (!nombre || /inscripci[oó]n cancelada/i.test(nombre) || vistos.has(url)) continue;\n    vistos.add(url);\n    salida.push({ nombre, url });\n  }\n  return salida;\n}\n\n// Salud: ficha de un prestador → esquema común. Lee la descripción estructurada de la página\n// (og:description) y corta antes de los datos del representante legal.\nfunction parseFichaSalud(html, url) {\n  const crudo = String(html || '');\n  const meta = crudo.match(/<meta[^>]+property=[\"']og:description[\"'][^>]+content=[\"']([^\"']*)[\"']/i);\n  let texto = decodificarEntidades(meta ? meta[1] : '').replace(/\\s+/g, ' ').trim();\n  const corte = texto.search(CORTE_PERSONA);\n  if (corte >= 0) texto = texto.slice(0, corte);\n  const campos = {};\n  const posiciones = ETIQUETAS_SALUD\n    .map((et) => ({ et, i: texto.indexOf(' ' + et + ' ') >= 0 ? texto.indexOf(' ' + et + ' ') + 1 : texto.indexOf(et + ' ') === 0 ? 0 : -1 }))\n    .filter((p) => p.i >= 0)\n    .sort((a, b) => a.i - b.i);\n  posiciones.forEach((p, k) => {\n    const fin = k + 1 < posiciones.length ? posiciones[k + 1].i : texto.length;\n    campos[p.et] = texto.slice(p.i + p.et.length, fin).replace(/\\[…\\]\\s*$/, '').trim();\n  });\n  const rut = parseRut(campos['Rut']);\n  if (!rut.valido || !rut.personaJuridica) return null;\n  const sitio = normalizarDominio((campos['Página Web'] || '').split(/\\s/)[0]);\n  const tipo = [campos['Tipo de Establecimiento'], campos['Complejidad Asistencial']].filter(Boolean).join(' · ');\n  return {\n    rut: rut.rut,\n    razon_social: campos['Propietario del Prestador'] || campos['Nombre'] || '',\n    nombre_comercial: campos['Nombre'] || '',\n    rubro_fuente: 'salud',\n    sitio_fuente: sitio || '',\n    tipo_fuente: tipo ? `Prestador acreditado: ${tipo}` : 'Prestador acreditado',\n    fuente_lista: 'Superintendencia de Salud',\n    ref_fuente: url,\n  };\n}\n\n// Tramo según ventas del SII → tamaño.\nfunction tamanoPorTramo(tramo) {\n  const t = Number(tramo);\n  if (!t || t === 1) return 'sin_info';\n  if (t <= 4) return 'micro';\n  if (t <= 7) return 'pequena';\n  if (t <= 9) return 'mediana';\n  return 'grande';\n}\n\n// Nodo \"Unificar fuentes\" (workflow A2). Requiere lib/normalize.js, lib/senales.js, lib/fuentes.js\n// Une Salud (fichas) y CMF (JSON) al esquema de `empresas`, excluye personas naturales y deduplica por RUT.\nconst params = $('Parámetros A2').first().json;\nconst existentes = new Set($('Leer empresas existentes').all().map((i) => i.json.dedup_key).filter(Boolean));\nconst fichas = $('Elegir fichas de Salud').all();\n\nconst stats = { fichas_descargadas: 0, fichas_error: 0, fichas_sin_rut: 0, cmf_total: 0, duplicadas: 0, ya_existentes: 0 };\nconst registros = [];\n\n$input.all().forEach((item, i) => {\n  const ref = fichas[i] && fichas[i].json;\n  if (!ref || !ref.url) return;\n  const cuerpo = cuerpoRespuesta(item.json);\n  if (item.json.statusCode !== 200 || cuerpo === null) { stats.fichas_error++; return; }\n  stats.fichas_descargadas++;\n  const r = parseFichaSalud(cuerpo, ref.url);\n  if (!r) { stats.fichas_sin_rut++; return; }\n  registros.push(r);\n});\n\nlet cmf = [];\nif (params.incluir_cmf) {\n  let datos = $('Consultar CMF').first().json;\n  const texto = cuerpoRespuesta(datos);\n  try { cmf = parseCmf(texto !== null ? JSON.parse(texto) : datos); } catch (e) { cmf = []; }\n  stats.cmf_total = cmf.length;\n  cmf = cmf.slice(0, Number(params.limite_cmf) || 0);\n}\nregistros.push(...cmf);\n\nconst vistas = new Set();\nconst nuevas = [];\nfor (const r of registros) {\n  const clave = dedupKey({ rut: r.rut, razonSocial: r.razon_social });\n  if (!clave || vistas.has(clave)) { stats.duplicadas++; continue; }\n  vistas.add(clave);\n  if (existentes.has(clave)) { stats.ya_existentes++; continue; }\n  nuevas.push({\n    ...r,\n    nombre_norm: normalizarRazonSocial(r.razon_social),\n    dedup_key: clave,\n    fuente: r.fuente_lista,\n    estado: 'nueva',\n    run_id: params.run_id,\n  });\n}\n\nconst meta = Object.fromEntries(Object.entries(stats).map(([k, v]) => ['meta_' + k, v]));\nif (nuevas.length === 0) return [{ json: { sin_nuevas: true, ...meta } }];\nreturn nuevas.map((n) => ({ json: { sin_nuevas: false, ...n, ...meta } }));\n"
+      }
+    },
+    {
+      "name": "¿Hay empresas nuevas?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.sin_nuevas }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "name": "Guardar empresas nuevas",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1980,
+        200
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "rut": "={{ $json.rut }}",
+            "razon_social": "={{ $json.razon_social }}",
+            "nombre_norm": "={{ $json.nombre_norm }}",
+            "dedup_key": "={{ $json.dedup_key }}",
+            "fuente": "={{ $json.fuente }}",
+            "estado": "={{ $json.estado }}",
+            "run_id": "={{ $json.run_id }}",
+            "fuente_lista": "={{ $json.fuente_lista }}",
+            "rubro_fuente": "={{ $json.rubro_fuente }}",
+            "sitio_fuente": "={{ $json.sitio_fuente }}",
+            "tipo_fuente": "={{ $json.tipo_fuente }}",
+            "ref_fuente": "={{ $json.ref_fuente }}",
+            "nombre_comercial": "={{ $json.nombre_comercial || \"\" }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "rut",
+              "displayName": "rut",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "razon_social",
+              "displayName": "razon_social",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nombre_norm",
+              "displayName": "nombre_norm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedup_key",
+              "displayName": "dedup_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fuente",
+              "displayName": "fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "estado",
+              "displayName": "estado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fuente_lista",
+              "displayName": "fuente_lista",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rubro_fuente",
+              "displayName": "rubro_fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sitio_fuente",
+              "displayName": "sitio_fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tipo_fuente",
+              "displayName": "tipo_fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ref_fuente",
+              "displayName": "ref_fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nombre_comercial",
+              "displayName": "nombre_comercial",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Resumen de ingesta A2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Nodo \"Resumen de ingesta A2\". Fila para la tabla `corridas`.\nconst params = $('Parámetros A2').first().json;\nconst filas = $('Unificar fuentes').all().map((i) => i.json);\nconst m = filas[0] || {};\nconst nuevas = filas.filter((f) => !f.sin_nuevas);\nconst porFuente = {};\nfor (const f of nuevas) porFuente[f.fuente_lista] = (porFuente[f.fuente_lista] || 0) + 1;\nconst conSitio = nuevas.filter((f) => f.sitio_fuente).length;\nconst elegir = $('Elegir fichas de Salud').first().json;\nreturn [{\n  json: {\n    run_id: params.run_id,\n    etapa: 'ingesta_regulados',\n    inicio: params.inicio,\n    fin: new Date().toISOString(),\n    procesadas: (m.meta_fichas_descargadas || 0) + (m.meta_cmf_total || 0),\n    nuevas: nuevas.length,\n    duplicadas: (m.meta_duplicadas || 0) + (m.meta_ya_existentes || 0),\n    excluidas: m.meta_fichas_sin_rut || 0,\n    errores: m.meta_fichas_error || 0,\n    nota: 'por_fuente=' + JSON.stringify(porFuente) + ' con_sitio_oficial=' + conSitio +\n      ' listado_salud=' + (elegir.listado_total || 0) + ' cmf_total=' + (m.meta_cmf_total || 0),\n  },\n}];\n"
+      }
+    },
+    {
+      "name": "Registrar corrida A2",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2420,
+        300
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_CORRIDAS",
+          "cachedResultName": "corridas"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "etapa",
+              "displayName": "etapa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "inicio",
+              "displayName": "inicio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fin",
+              "displayName": "fin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "procesadas",
+              "displayName": "procesadas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nuevas",
+              "displayName": "nuevas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duplicadas",
+              "displayName": "duplicadas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "excluidas",
+              "displayName": "excluidas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "errores",
+              "displayName": "errores",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nota",
+              "displayName": "nota",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Sticky Note 7c86895b",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -60
+      ],
+      "parameters": {
+        "content": "## A2 · Ingesta de sectores regulados\nFuentes oficiales del ICP: **CMF** (Registro de Prestadores Fintech, JSON) y **Superintendencia de Salud** (prestadores acreditados: listado + una ficha por prestador, 1 solicitud por segundo). Solo personas jurídicas; de la ficha no se guardan teléfono, dirección ni datos del representante legal. Ver docs/fuentes-fase2.md.",
+        "color": 4,
+        "width": 600,
+        "height": 200
+      }
+    }
+  ],
+  "connections": {
+    "Iniciar ingesta A2": {
+      "main": [
+        [
+          {
+            "node": "Parámetros A2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parámetros A2": {
+      "main": [
+        [
+          {
+            "node": "Leer empresas existentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Llamado desde orquestador": {
+      "main": [
+        [
+          {
+            "node": "Parámetros A2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer empresas existentes": {
+      "main": [
+        [
+          {
+            "node": "Consultar CMF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar CMF": {
+      "main": [
+        [
+          {
+            "node": "Listado nacional de Salud",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Listado nacional de Salud": {
+      "main": [
+        [
+          {
+            "node": "Elegir fichas de Salud",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Elegir fichas de Salud": {
+      "main": [
+        [
+          {
+            "node": "Descargar ficha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar ficha": {
+      "main": [
+        [
+          {
+            "node": "Unificar fuentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unificar fuentes": {
+      "main": [
+        [
+          {
+            "node": "¿Hay empresas nuevas?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay empresas nuevas?": {
+      "main": [
+        [
+          {
+            "node": "Guardar empresas nuevas",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resumen de ingesta A2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar empresas nuevas": {
+      "main": [
+        [
+          {
+            "node": "Resumen de ingesta A2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumen de ingesta A2": {
+      "main": [
+        [
+          {
+            "node": "Registrar corrida A2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  }
+}

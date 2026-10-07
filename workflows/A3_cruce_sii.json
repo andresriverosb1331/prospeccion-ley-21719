@@ -1,0 +1,247 @@
+{
+  "name": "A3 · Cruce SII",
+  "nodes": [
+    {
+      "name": "Iniciar cruce SII",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Leer sii_referencia",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_SII_REFERENCIA",
+          "cachedResultName": "sii_referencia"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Llamado desde orquestador",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "name": "Leer empresas",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        300
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "name": "Preparar actualizaciones",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Nodo \"Preparar actualizaciones\" (workflow A3 · Cruce SII).\n// Une `sii_referencia` con `empresas` por RUT. No pisa un año de constitución que ya exista.\nconst sii = new Map($('Leer sii_referencia').all().map((i) => [i.json.rut, i.json]).filter(([rut]) => rut));\nconst salida = [];\nfor (const item of $('Leer empresas').all()) {\n  const e = item.json;\n  const s = sii.get(e.rut);\n  if (!e.id || !s) continue;\n  if (e.tamano === s.tamano && e.trabajadores === s.trabajadores && e.rubro_sii === s.rubro_sii) continue;\n  salida.push({\n    json: {\n      row_id: e.id,\n      tamano: s.tamano,\n      trabajadores: s.trabajadores,\n      rubro_sii: s.rubro_sii,\n      comuna: e.comuna || s.comuna,\n      anio_constitucion: e.anio_constitucion || s.anio_inicio,\n    },\n  });\n}\nreturn salida;\n"
+      }
+    },
+    {
+      "name": "Actualizar empresas",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.row_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "tamano": "={{ $json.tamano }}",
+            "trabajadores": "={{ $json.trabajadores }}",
+            "rubro_sii": "={{ $json.rubro_sii }}",
+            "comuna": "={{ $json.comuna }}",
+            "anio_constitucion": "={{ $json.anio_constitucion }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "tamano",
+              "displayName": "tamano",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "trabajadores",
+              "displayName": "trabajadores",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rubro_sii",
+              "displayName": "rubro_sii",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "comuna",
+              "displayName": "comuna",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "anio_constitucion",
+              "displayName": "anio_constitucion",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Sticky Note 40426ca7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -40
+      ],
+      "parameters": {
+        "content": "## A3 · Cruce SII\nPasa a `empresas` el tamaño según ventas, los trabajadores y el rubro del SII. Antes, `scripts/cruce_sii.py` recorre la nómina del SII (378 MB, fuera de n8n) y carga en `sii_referencia` solo los RUT del pipeline.",
+        "color": 6,
+        "width": 520,
+        "height": 180
+      }
+    }
+  ],
+  "connections": {
+    "Iniciar cruce SII": {
+      "main": [
+        [
+          {
+            "node": "Leer sii_referencia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer sii_referencia": {
+      "main": [
+        [
+          {
+            "node": "Leer empresas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Llamado desde orquestador": {
+      "main": [
+        [
+          {
+            "node": "Leer sii_referencia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer empresas": {
+      "main": [
+        [
+          {
+            "node": "Preparar actualizaciones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar actualizaciones": {
+      "main": [
+        [
+          {
+            "node": "Actualizar empresas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  }
+}

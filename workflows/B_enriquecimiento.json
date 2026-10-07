@@ -1,0 +1,739 @@
+{
+  "name": "B · Dominio y enriquecimiento",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Iniciar enriquecimiento",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b-run",
+              "name": "run_id",
+              "value": "={{ $json.run_id || (\"run-\" + $now.toFormat(\"yyyyLLdd-HHmmss\")) }}",
+              "type": "string"
+            },
+            {
+              "id": "b-lim",
+              "name": "limite",
+              "value": "={{ $json.limite || 100 }}",
+              "type": "number"
+            },
+            {
+              "id": "b-ini",
+              "name": "inicio",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "b-rep",
+              "name": "reprocesar",
+              "value": "={{ $json.reprocesar ?? false }}",
+              "type": "boolean"
+            },
+            {
+              "id": "b-ree",
+              "name": "reenriquecer",
+              "value": "={{ $json.reenriquecer ?? false }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Parámetros B",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "name": "Llamado desde orquestador",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "estado",
+              "condition": "eq",
+              "keyValue": "nueva"
+            },
+            {
+              "keyName": "estado",
+              "condition": "eq",
+              "keyValue": "={{ $json.reprocesar ? \"sin_dominio\" : \"nueva\" }}"
+            },
+            {
+              "keyName": "dominio",
+              "condition": "like",
+              "keyValue": "={{ $json.reenriquecer ? \"%.%\" : \"__nunca__\" }}"
+            }
+          ]
+        },
+        "limit": "={{ $json.limite }}",
+        "matchType": "anyCondition"
+      },
+      "name": "Leer empresas nuevas",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalización de empresas chilenas. Este mismo código se pega en el nodo\n// Code del workflow A (n8n), así que se mantiene sin dependencias externas.\n\nconst PERSONA_JURIDICA_MIN = 50000000;\n\nconst SUFIJOS_SOCIETARIOS = [\n  'sociedad por acciones', 'sociedad anonima', 'sociedad de responsabilidad limitada',\n  'empresa individual de responsabilidad limitada', 'limitada', 'ltda', 'spa', 's a', 'sa',\n  'eirl', 'e i r l', 'y cia', 'y compania', 'cia',\n];\n\nfunction quitarTildes(texto) {\n  return texto.normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\n// Calcula el dígito verificador de un RUT con el algoritmo módulo 11.\nfunction calcularDV(cuerpo) {\n  let suma = 0;\n  let multiplicador = 2;\n  for (let i = cuerpo.length - 1; i >= 0; i--) {\n    suma += Number(cuerpo[i]) * multiplicador;\n    multiplicador = multiplicador === 7 ? 2 : multiplicador + 1;\n  }\n  const resto = 11 - (suma % 11);\n  if (resto === 11) return '0';\n  if (resto === 10) return 'K';\n  return String(resto);\n}\n\n// Devuelve { valido, cuerpo, dv, rut, personaJuridica } a partir de \"76.123.456-7\", \"761234567\", etc.\nfunction parseRut(entrada) {\n  const limpio = String(entrada ?? '').toUpperCase().replace(/[^0-9K]/g, '');\n  if (limpio.length < 2) return { valido: false };\n  const cuerpo = limpio.slice(0, -1);\n  const dv = limpio.slice(-1);\n  if (!/^\\d+$/.test(cuerpo)) return { valido: false };\n  const valido = calcularDV(cuerpo) === dv;\n  const numero = Number(cuerpo);\n  return {\n    valido,\n    cuerpo,\n    dv,\n    rut: `${numero}-${dv}`,\n    personaJuridica: numero >= PERSONA_JURIDICA_MIN,\n  };\n}\n\n// \"https://www.Empresa.cl/contacto?x=1\" -> \"empresa.cl\"\nfunction normalizarDominio(entrada) {\n  if (!entrada) return null;\n  let texto = String(entrada).trim().toLowerCase();\n  if (!texto) return null;\n  texto = texto.replace(/^[a-z]+:\\/\\//, '');\n  texto = texto.split(/[/?#]/)[0];\n  texto = texto.replace(/:\\d+$/, '');\n  texto = texto.replace(/^www\\d*\\./, '');\n  if (!/^[a-z0-9.-]+\\.[a-z]{2,}$/.test(texto)) return null;\n  return texto;\n}\n\n// \"Inversiones Pérez & Cía. Ltda.\" -> \"inversiones perez\"\nfunction normalizarRazonSocial(entrada) {\n  let texto = quitarTildes(String(entrada ?? '').toLowerCase());\n  texto = texto.replace(/&/g, ' y ');\n  texto = texto.replace(/[^a-z0-9ñ ]/g, ' ').replace(/\\s+/g, ' ').trim();\n  let cambio = true;\n  while (cambio) {\n    cambio = false;\n    for (const sufijo of SUFIJOS_SOCIETARIOS) {\n      if (texto === sufijo) continue;\n      if (texto.endsWith(' ' + sufijo)) {\n        texto = texto.slice(0, -(sufijo.length + 1)).trim();\n        cambio = true;\n      }\n    }\n  }\n  return texto;\n}\n\n// Clave para detectar duplicados: el RUT manda; si no hay RUT válido, el dominio; si no, el nombre.\nfunction dedupKey({ rut, dominio, razonSocial }) {\n  const r = parseRut(rut);\n  if (r.valido) return `rut:${r.rut}`;\n  const d = normalizarDominio(dominio);\n  if (d) return `dom:${d}`;\n  const n = normalizarRazonSocial(razonSocial);\n  return n ? `nom:${n}` : null;\n}\n\n// Palabras que describen el giro y no identifican a una empresa: no sirven solas como dominio\n// ni como prueba de que un sitio pertenece a la empresa.\nconst PALABRAS_GENERICAS = new Set([\n  'sociedad', 'inversiones', 'inversion', 'comercial', 'comercializadora', 'servicios', 'empresa',\n  'empresas', 'grupo', 'inmobiliaria', 'constructora', 'transportes', 'transporte', 'agricola',\n  'ingenieria', 'clinica', 'centro', 'chile', 'chilena', 'holding', 'asesorias', 'consultora',\n  'consultores', 'distribuidora', 'importadora', 'exportadora', 'gestion', 'desarrollo',\n  'proyectos', 'capital', 'negocios', 'compania', 'corporacion', 'spa', 'limitada', 'del', 'los',\n  'las', 'de', 'la', 'el', 'y', 'e', 'en', 'para', 'con',\n]);\n\nfunction palabrasDistintivas(razonSocial) {\n  return normalizarRazonSocial(razonSocial)\n    .replace(/ñ/g, 'n')\n    .split(' ')\n    .filter((p) => p.length >= 4 && !PALABRAS_GENERICAS.has(p));\n}\n\n// Candidatos de dominio a partir de la razón social:\n// \"Inversiones Club Exponencial SpA\" -> clubexponencial.cl, club-exponencial.cl, exponencial.cl, ...\nfunction candidatosDominio(razonSocial) {\n  const palabras = normalizarRazonSocial(razonSocial).replace(/ñ/g, 'n').split(' ').filter(Boolean);\n  const sinGiro = palabras.filter((p) => !PALABRAS_GENERICAS.has(p));\n  const slugs = new Set();\n  if (palabras.length) slugs.add(palabras.join(''));\n  if (sinGiro.length) {\n    slugs.add(sinGiro.join(''));\n    if (sinGiro.length > 1) slugs.add(sinGiro.join('-'));\n    if (sinGiro.length > 2) slugs.add(sinGiro.slice(0, 2).join(''));\n    if (sinGiro[0].length >= 5) slugs.add(sinGiro[0]);\n  }\n  const candidatos = [];\n  for (const slug of slugs) {\n    if (slug.length < 4 || slug.length > 40) continue;\n    candidatos.push(`${slug}.cl`, `${slug}.com`);\n  }\n  return candidatos.slice(0, 8);\n}\n\n// Nodo \"Generar candidatos\" (workflow B). Requiere lib/normalize.js\n// Un item por dominio candidato de cada empresa. Si una fuente oficial informó el sitio\n// (p. ej. la Superintendencia de Salud), se prueba solo ese; si no, se generan candidatos\n// desde la razón social y el nombre comercial (máx. 8).\nconst salida = [];\nfor (const item of $input.all()) {\n  const e = item.json;\n  if (!e.id) continue;\n  const oficial = normalizarDominio(e.sitio_fuente);\n  const hosts = oficial\n    ? [oficial, 'www.' + oficial]\n    : [...new Set([...candidatosDominio(e.nombre_comercial || ''), ...candidatosDominio(e.razon_social)])].slice(0, 8);\n  for (const host of hosts) {\n    salida.push({ json: { row_id: e.id, host, desde_fuente: Boolean(oficial), robots_url: 'https://' + host + '/robots.txt' } });\n  }\n}\nreturn salida;\n"
+      },
+      "name": "Generar candidatos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.robots_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "ProspeccionLey21719Bot/0.1 (respeta robots.txt)"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 10,
+              "batchInterval": 300
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 3
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 6000
+        }
+      },
+      "name": "Consultar robots.txt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        304
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extracción de señales de cumplimiento desde el HTML de un sitio y puntaje por reglas\n// (ver docs/icp-rubrica.md). Sin dependencias: se antepone a los nodos Code de n8n.\n\nconst DOMINIO_ESTACIONADO = /(domain (is )?for sale|este dominio (est[aá] )?(a la venta|disponible)|dominio en venta|parked (free|domain)|sedo\\.com|dan\\.com|hugedomains|godaddy\\.com\\/domainsearch|this domain is (registered|parked)|nic chile.*dominio|cuenta suspendida|account suspended|coming soon|sitio en construcci[oó]n|under construction)/i;\n\nconst TRACKERS = /(googletagmanager\\.com|google-analytics\\.com|gtag\\(|fbq\\(|connect\\.facebook\\.net|hotjar|clarity\\.ms|tiktok\\.com\\/i18n\\/pixel|analytics\\.tiktok|doubleclick\\.net|hs-scripts\\.com|linkedin\\.com\\/insight|snap\\.licdn)/i;\nconst BANNER_COOKIES = /(cookiebot|onetrust|cookieyes|cookie-law|cookielawinfo|complianz|cookie[-_ ]?consent|cookie[-_ ]?banner|aceptar (todas las )?cookies|usamos cookies|utilizamos cookies|este sitio (web )?utiliza cookies|pol[ií]tica de cookies)/i;\n// Señales de interacción: se buscan en el TEXTO VISIBLE (no en el código, donde un plugin\n// instalado y sin usar —woocommerce, vtex— o la palabra \"login\" de un script daban falsos positivos).\nconst LOGIN_TEXTO = /\\b(iniciar sesion|inicia sesion|mi cuenta|ingresa a tu cuenta|ingresar a tu cuenta|log ?in|sign in|acceso clientes|portal (de )?clientes|sucursal virtual)\\b/i;\nconst LOGIN_ENLACE = /href=[\"'][^\"']*(login|signin|sign-in|ingresar|mi-cuenta|my-account|\\/account|portal|sucursal)[^\"']*[\"']/i;\nconst TIENDA_TEXTO = /\\b(anadir al carrito|agregar al carro|agregar al carrito|comprar ahora|ver carrito|tu carrito|carro de compras|finalizar compra|ir a pagar)\\b/i;\nconst PRECIO = /\\$\\s?\\d{1,3}(?:[.,]\\d{3})+/g;  // $12.990 o $12,990 (Shopify)\nconst AGENDA_TEXTO = /\\b(agenda tu hora|reserva tu hora|reservar hora|agendar (una )?(hora|cita)|reserva online|agenda online)\\b/i;\nconst PLATAFORMA_TIENDA = /(woocommerce|shopify|jumpseller|vtex|prestashop|magento|bsale)/i;\nconst SITIO_MINIMO = /(coming soon|opening soon|proximamente|en construccion|under construction|just another wordpress site|sitio en mantenimiento|estamos trabajando en nuestro sitio)/i;\nconst ENLACE_POLITICA = /(privacidad|privacy|datos[-_ ]personales|proteccion[-_ ]de[-_ ]datos|protecci%c3%b3n|aviso[-_ ]legal|tratamiento[-_ ]de[-_ ]datos)/i;\nconst CONTACTO_PRIVACIDAD = /((privacidad|datos|dpo|protecciondedatos|datospersonales)@[a-z0-9.-]+\\.[a-z]{2,}|delegado de protecci[oó]n de datos|encargado de (la )?protecci[oó]n de datos|oficial de (protecci[oó]n de )?datos)/i;\n\nfunction quitarTildes(texto) {\n  return String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\nfunction textoVisible(html) {\n  return String(html || '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&[a-z]+;/gi, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction titulo(html) {\n  const m = String(html || '').match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);\n  return m ? textoVisible(m[1]) : '';\n}\n\n// Formularios que piden datos de personas (email, teléfono, RUT o nombre).\nfunction tieneFormularioDatos(html) {\n  const forms = String(html || '').match(/<form[\\s\\S]*?<\\/form>/gi) || [];\n  return forms.some((f) => /type=[\"']?(email|tel)|name=[\"']?[^\"'>]*(email|correo|telefono|phone|rut|nombre|name)/i.test(f));\n}\n\n// El nodo HTTP Request de n8n entrega el cuerpo en `body` o en `data` según la respuesta\n// (con fullResponse y responseFormat=text). Se lee siempre a través de esta función.\nfunction cuerpoRespuesta(r) {\n  if (!r) return null;\n  for (const valor of [r.body, r.data]) {\n    if (typeof valor === 'string') return valor;\n  }\n  return null;\n}\n\n// El sandbox del nodo Code de n8n no expone la clase global URL: parser mínimo propio.\nfunction partirUrl(url) {\n  const m = String(url || '').match(/^(https?):\\/\\/([^/?#]+)([^?#]*)/i);\n  if (!m) return null;\n  return { protocolo: m[1].toLowerCase(), host: m[2].toLowerCase().replace(/:\\d+$/, ''), ruta: m[3] || '/' };\n}\n\nfunction resolverUrl(href, baseUrl) {\n  const base = partirUrl(baseUrl);\n  const h = String(href || '').trim().split('#')[0];\n  if (!base || !h || /^(mailto|tel|javascript|data):/i.test(h)) return null;\n  if (/^https?:\\/\\//i.test(h)) return h;\n  if (h.startsWith('//')) return base.protocolo + ':' + h;\n  const origen = base.protocolo + '://' + base.host;\n  if (h.startsWith('/')) return origen + h;\n  const dir = base.ruta.replace(/[^/]*$/, '') || '/';\n  return origen + dir + h.replace(/^\\.\\//, '');\n}\n\n// Busca el primer enlace del mismo sitio cuyo href o texto apunte a la política de privacidad.\nfunction enlacePolitica(html, baseUrl) {\n  const re = /<a\\s[^>]*href=[\"']([^\"'#]+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n  const base = partirUrl(baseUrl);\n  if (!base) return null;\n  let m;\n  while ((m = re.exec(String(html || ''))) !== null) {\n    const href = m[1];\n    const texto = textoVisible(m[2]);\n    if (!ENLACE_POLITICA.test(href) && !ENLACE_POLITICA.test(quitarTildes(texto))) continue;\n    const url = resolverUrl(href, baseUrl);\n    const partes = partirUrl(url);\n    if (!partes || partes.host.replace(/^www\\./, '') !== base.host.replace(/^www\\./, '')) continue;\n    return url;\n  }\n  return null;\n}\n\n// Interpreta robots.txt para User-agent: * y devuelve las rutas prohibidas.\nfunction reglasRobots(texto) {\n  const lineas = String(texto || '').split(/\\r?\\n/).map((l) => l.replace(/#.*$/, '').trim());\n  const disallow = [];\n  let aplica = false;\n  let enGrupoAgentes = false;\n  for (const linea of lineas) {\n    const m = linea.match(/^([a-z-]+)\\s*:\\s*(.*)$/i);\n    if (!m) continue;\n    const campo = m[1].toLowerCase();\n    const valor = m[2].trim();\n    if (campo === 'user-agent') {\n      if (!enGrupoAgentes) aplica = false;\n      enGrupoAgentes = true;\n      if (valor === '*') aplica = true;\n    } else {\n      enGrupoAgentes = false;\n      if (aplica && campo === 'disallow' && valor) disallow.push(valor);\n    }\n  }\n  return disallow;\n}\n\nfunction rutaPermitida(disallow, ruta) {\n  return !disallow.some((d) => d === '/' || ruta.startsWith(d));\n}\n\n// Verifica que el HTML de un dominio candidato corresponda a la empresa.\n// `nombre` es la razón social normalizada (sin sufijos) y `palabras` sus palabras distintivas.\n// Reglas, de más a menos fuerte:\n//  - el sitio muestra el RUT de la empresa;\n//  - nombre de una sola palabra (una marca, ej. \"simelec\"): basta con que aparezca en el título;\n//  - nombre con varias palabras: la frase completa (o la de sus palabras distintivas, si son 2+)\n//    debe aparecer en el título o el texto. Una sola palabra suelta (\"gonzalez\", \"minera\") no basta.\n// Devuelve { ok, evidencia, puntos }.\nfunction verificarSitio(html, { rut, palabras, nombre = '' }) {\n  if (!html || html.length < 200) return { ok: false, evidencia: 'sin_contenido', puntos: 0 };\n  const visible = textoVisible(html);\n  const enVenta = /(is for sale|en venta|hugedomains|sedo|dan\\.com|afternic|domain parking|parked)/i.test(titulo(html));\n  if (enVenta || (DOMINIO_ESTACIONADO.test(visible.slice(0, 5000)) && visible.length < 4000)) {\n    return { ok: false, evidencia: 'estacionado', puntos: 0 };\n  }\n  const tit = quitarTildes(titulo(html).toLowerCase());\n  const cuerpo = quitarTildes(visible.toLowerCase());\n  const rutNum = String(rut || '').split('-')[0];\n  if (rutNum && rutNum.length >= 8) {\n    const rutConPuntos = rutNum.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.');\n    if (cuerpo.includes(rutNum) || cuerpo.includes(rutConPuntos)) return { ok: true, evidencia: 'rut', puntos: 3 };\n  }\n  const limpiar = (t) => ' ' + t.replace(/ñ/g, 'n').replace(/[^a-z0-9]+/g, ' ').trim() + ' ';\n  const titL = limpiar(tit);\n  const cuerpoL = limpiar(cuerpo);\n  const nombreL = limpiar(quitarTildes(String(nombre).toLowerCase())).trim();\n  const palabrasNombre = nombreL.split(' ').filter(Boolean);\n  if (palabrasNombre.length === 1 && palabras.length === 1 && palabras[0].length >= 5) {\n    if (titL.includes(' ' + palabras[0] + ' ')) return { ok: true, evidencia: 'marca_en_titulo', puntos: 2 };\n    return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n  }\n  const frases = [nombreL];\n  if (palabras.length >= 2) frases.push(palabras.join(' '));\n  for (const frase of frases) {\n    if (!frase || frase.split(' ').length < 2) continue;\n    if (titL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_titulo', puntos: 2 };\n    if (cuerpoL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_texto', puntos: 1 };\n  }\n  return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n}\n\n// Fragmento del texto alrededor de la coincidencia: queda como evidencia auditable de la señal.\nfunction fragmento(texto, re) {\n  const m = re.exec(texto);\n  re.lastIndex = 0;\n  if (!m) return null;\n  return texto.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40).trim();\n}\n\nfunction senalesHome(html, baseUrl) {\n  const visible = textoVisible(html);\n  const visibleSinTildes = quitarTildes(visible).toLowerCase();\n  const crudo = String(html || '');\n  const palabras = visible.split(' ').filter(Boolean).length;\n  const precios = (visible.match(PRECIO) || []).length;\n\n  // \"Próximamente\" en un menú no hace mínimo a un sitio con contenido: solo cuenta en el título o en sitios pequeños.\n  const avisoEnConstruccion = SITIO_MINIMO.test(quitarTildes(titulo(html))) ||\n    (palabras < 400 && SITIO_MINIMO.test(quitarTildes(visible.slice(0, 3000))));\n  const minimo = palabras < 150 || avisoEnConstruccion;\n  const tienePassword = /type=[\"']?password/i.test(crudo);\n  // En un sitio mínimo el \"iniciar sesión\" suele ser el acceso del dueño (p. ej. tienda Shopify cerrada).\n  const login = !minimo && LOGIN_TEXTO.test(visibleSinTildes) && (tienePassword || LOGIN_ENLACE.test(crudo));\n  const textoTienda = TIENDA_TEXTO.test(visibleSinTildes);\n  // Una tienda cuenta solo si se ve operando: botón de carrito/compra y al menos 2 precios, y no es un sitio \"próximamente\".\n  const tienda = textoTienda && precios >= 2 && !minimo;\n  const agenda = AGENDA_TEXTO.test(visibleSinTildes);\n  const formularios = tieneFormularioDatos(crudo);\n\n  return {\n    sitio_activo: true,\n    sitio_minimo: minimo,\n    palabras_visibles: palabras,\n    titulo: titulo(html).slice(0, 120),\n    politica_url: enlacePolitica(html, baseUrl),\n    banner_cookies: BANNER_COOKIES.test(crudo),\n    trackers: TRACKERS.test(crudo),\n    formularios_datos: formularios,\n    login,\n    tienda_online: tienda,\n    agenda_online: agenda,\n    plataforma_tienda: (crudo.match(PLATAFORMA_TIENDA) || [null])[0],\n    contacto_privacidad: CONTACTO_PRIVACIDAD.test(crudo),\n    evidencias: {\n      login: login ? fragmento(visibleSinTildes, LOGIN_TEXTO) : null,\n      tienda_online: tienda ? fragmento(visibleSinTildes, TIENDA_TEXTO) : null,\n      agenda_online: agenda ? fragmento(visibleSinTildes, AGENDA_TEXTO) : null,\n      sitio_minimo: minimo ? (palabras < 150 ? palabras + ' palabras visibles' : fragmento(quitarTildes(titulo(html) + ' ' + visible), SITIO_MINIMO)) : null,\n    },\n    extracto: visible.slice(0, 1500),\n  };\n}\n\n// Términos propios del cuerpo de una política (no de un pie de página con el enlace \"Privacidad\").\nconst TERMINOS_POLITICA = [\n  /datos personales|informacion personal|personal information/, /tratamiento/, /finalidad|proposito|fines/,\n  /derechos?( de)? (acceso|rectificacion|cancelacion|oposicion|arco)|ejercer (sus|tus) derechos/,\n  /consentimiento/, /terceros|proveedores de servicios/, /conserva(cion|remos)|retencion|plazo/,\n  /cookies/, /seguridad de (la informacion|los datos|sus datos)/,\n];\n// Políticas generadas por la plataforma o por un generador: válidas, pero genéricas.\nconst PLANTILLA_PLATAFORMA = /(cuenta con tecnologia de shopify|con tecnologia de shopify|powered by shopify|esta tienda (funciona|esta alojada) (con|en) shopify|shopify inc)/;\nconst PLANTILLA_GENERADOR = /(termly|iubenda|privacypolicies\\.com|generador de (politicas|terminos)|termsfeed|freeprivacypolicy)/;\n\n// Rutas conocidas de la política según la plataforma del sitio (cuando la portada no la enlaza).\nconst RUTA_POLITICA_PLATAFORMA = {\n  shopify: '/policies/privacy-policy',\n};\n\nfunction senalesPolitica(html) {\n  const crudo = String(html || '');\n  const visible = quitarTildes(textoVisible(crudo)).toLowerCase();\n  if (!visible || visible.length < 300) return { politica_privacidad: false };\n  const encabezado = quitarTildes(titulo(crudo) + ' ' + ((crudo.match(/<h1[^>]*>([\\s\\S]*?)<\\/h1>/i) || [])[1] || '')).toLowerCase();\n  const tituloDePolitica = /(privacidad|privacy|datos personales|proteccion de datos|tratamiento de datos)/.test(encabezado);\n  const terminos = TERMINOS_POLITICA.filter((re) => re.test(visible)).length;\n  // Es una política si su título/H1 lo dice y el cuerpo usa al menos 3 términos propios de una.\n  const esPolitica = tituloDePolitica && terminos >= 3;\n  if (!esPolitica) return { politica_privacidad: false, politica_terminos: terminos };\n  // Año de la política: solo el que acompaña a \"actualización / vigencia / modificación\", nunca el \"© 2026\" del pie.\n  const fechas = [...visible.matchAll(/(actualiza\\w*|vigen\\w*|modifica\\w*|fecha de (entrada|publicacion)\\w*)[^.]{0,60}?\\b(20[12]\\d)\\b/g)]\n    .map((m) => Number(m[3])).filter((a) => a <= 2026);\n  const origen = PLANTILLA_PLATAFORMA.test(visible) ? 'plantilla_shopify'\n    : PLANTILLA_GENERADOR.test(visible) ? 'plantilla_generador' : 'propia';\n  return {\n    politica_privacidad: true,\n    politica_terminos: terminos,\n    politica_origen: origen,\n    menciona_ley_nueva: /21\\.?719/.test(visible),\n    menciona_ley_antigua: /19\\.?628/.test(visible),\n    politica_anio: fechas.length ? Math.max(...fechas) : null,\n    contacto_privacidad_politica: CONTACTO_PRIVACIDAD.test(visible),\n  };\n}\n\n// Puntaje por reglas SIN el componente de rubro (lo agrega la etapa de IA).\nfunction puntajeReglas(s, { capital, anioConstitucion, tamano, anioActual = 2026 }) {\n  let exposicion = 0;\n  if (s.formularios_datos) exposicion += 6;\n  if (s.login) exposicion += 6;\n  if (s.tienda_online) exposicion += 6;\n  if (s.agenda_online) exposicion += 6;\n  if (s.trackers) exposicion += 4;\n  exposicion = Math.min(exposicion, 20);\n\n  let brecha = 0;\n  if (!s.politica_privacidad) brecha += 20;\n  else if (!s.menciona_ley_nueva || (s.politica_anio && s.politica_anio < 2025)) brecha += 12;\n  // Una plantilla de la plataforma no está adaptada al negocio ni a la ley chilena: la tienda\n  // sigue siendo responsable de los datos de sus clientes aunque use Shopify.\n  if (s.politica_privacidad && s.politica_origen && s.politica_origen !== 'propia' && !s.menciona_ley_nueva) brecha += 4;\n  if (!s.contacto_privacidad && !s.contacto_privacidad_politica) brecha += 10;\n  if (s.trackers && !s.banner_cookies) brecha += 10;\n  brecha = Math.min(brecha, 40);\n\n  // Un sitio mínimo (landing vacía, \"próximamente\") no demuestra operación: no suma por sitio activo.\n  let viabilidad = s.sitio_activo && !s.sitio_minimo ? 5 : 0;\n  // Tamaño según ventas (SII) si existe; si no, el capital declarado como proxy.\n  if (tamano === 'grande' || tamano === 'mediana') viabilidad += 10;\n  else if (tamano === 'pequena') viabilidad += 5;\n  else if (capital >= 200000000) viabilidad += 10;\n  else if (capital >= 50000000) viabilidad += 5;\n  if (anioConstitucion && anioActual - anioConstitucion >= 5) viabilidad += 5;\n  viabilidad = Math.min(viabilidad, 20);\n\n  return { exposicion_sin_rubro: exposicion, brecha, viabilidad, total_sin_rubro: exposicion + brecha + viabilidad };\n}\n\nconst PUNTOS_RUBRO = {\n  salud: 20, fintech_seguros: 20, educacion: 20, rrhh: 20,\n  retail_ecommerce: 14, saas_tecnologia: 14, inmobiliario: 14, marketing: 14,\n  otro: 5,\n};\n\n// Puntaje final: reglas + rubro (topado a 40 en exposición) + ajuste de la IA (±15), en 0..100.\nfunction puntajeFinal(reglas, rubro, ajuste) {\n  const puntosRubro = PUNTOS_RUBRO[rubro] ?? 5;\n  const exposicion = Math.min(reglas.exposicion_sin_rubro + puntosRubro, 40);\n  const ajusteAcotado = Math.max(-15, Math.min(15, Number(ajuste) || 0));\n  const total = exposicion + reglas.brecha + reglas.viabilidad + ajusteAcotado;\n  return Math.max(0, Math.min(100, Math.round(total)));\n}\n\nfunction estadoPorPuntaje(score, confianza) {\n  if (Number(confianza) < 0.6) return 'revision';\n  if (score >= 70) return 'calificada';\n  if (score >= 40) return 'revision';\n  return 'descartada';\n}\n\n// Nodo \"Evaluar robots\" (workflow B). Requiere lib/senales.js\n// Descarta dominios que no responden y los que prohíben rastrear la portada.\nconst candidatos = $('Generar candidatos').all();\nreturn $input.all()\n  .map((item, i) => {\n    const c = candidatos[i].json;\n    const r = item.json;\n    const respondio = typeof r.statusCode === 'number';\n    const cuerpo = cuerpoRespuesta(r) || '';\n    const esRobots = respondio && r.statusCode === 200 && /user-agent/i.test(cuerpo);\n    const disallow = esRobots ? reglasRobots(cuerpo) : [];\n    return { json: { ...c, respondio, disallow, home_permitido: respondio && rutaPermitida(disallow, '/') } };\n  })\n  .filter((item) => item.json.home_permitido);\n"
+      },
+      "name": "Evaluar robots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ \"https://\" + $json.host + \"/\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "ProspeccionLey21719Bot/0.1 (respeta robots.txt)"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 500
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "name": "Descargar portada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1328,
+        304
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalización de empresas chilenas. Este mismo código se pega en el nodo\n// Code del workflow A (n8n), así que se mantiene sin dependencias externas.\n\nconst PERSONA_JURIDICA_MIN = 50000000;\n\nconst SUFIJOS_SOCIETARIOS = [\n  'sociedad por acciones', 'sociedad anonima', 'sociedad de responsabilidad limitada',\n  'empresa individual de responsabilidad limitada', 'limitada', 'ltda', 'spa', 's a', 'sa',\n  'eirl', 'e i r l', 'y cia', 'y compania', 'cia',\n];\n\nfunction quitarTildes(texto) {\n  return texto.normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\n// Calcula el dígito verificador de un RUT con el algoritmo módulo 11.\nfunction calcularDV(cuerpo) {\n  let suma = 0;\n  let multiplicador = 2;\n  for (let i = cuerpo.length - 1; i >= 0; i--) {\n    suma += Number(cuerpo[i]) * multiplicador;\n    multiplicador = multiplicador === 7 ? 2 : multiplicador + 1;\n  }\n  const resto = 11 - (suma % 11);\n  if (resto === 11) return '0';\n  if (resto === 10) return 'K';\n  return String(resto);\n}\n\n// Devuelve { valido, cuerpo, dv, rut, personaJuridica } a partir de \"76.123.456-7\", \"761234567\", etc.\nfunction parseRut(entrada) {\n  const limpio = String(entrada ?? '').toUpperCase().replace(/[^0-9K]/g, '');\n  if (limpio.length < 2) return { valido: false };\n  const cuerpo = limpio.slice(0, -1);\n  const dv = limpio.slice(-1);\n  if (!/^\\d+$/.test(cuerpo)) return { valido: false };\n  const valido = calcularDV(cuerpo) === dv;\n  const numero = Number(cuerpo);\n  return {\n    valido,\n    cuerpo,\n    dv,\n    rut: `${numero}-${dv}`,\n    personaJuridica: numero >= PERSONA_JURIDICA_MIN,\n  };\n}\n\n// \"https://www.Empresa.cl/contacto?x=1\" -> \"empresa.cl\"\nfunction normalizarDominio(entrada) {\n  if (!entrada) return null;\n  let texto = String(entrada).trim().toLowerCase();\n  if (!texto) return null;\n  texto = texto.replace(/^[a-z]+:\\/\\//, '');\n  texto = texto.split(/[/?#]/)[0];\n  texto = texto.replace(/:\\d+$/, '');\n  texto = texto.replace(/^www\\d*\\./, '');\n  if (!/^[a-z0-9.-]+\\.[a-z]{2,}$/.test(texto)) return null;\n  return texto;\n}\n\n// \"Inversiones Pérez & Cía. Ltda.\" -> \"inversiones perez\"\nfunction normalizarRazonSocial(entrada) {\n  let texto = quitarTildes(String(entrada ?? '').toLowerCase());\n  texto = texto.replace(/&/g, ' y ');\n  texto = texto.replace(/[^a-z0-9ñ ]/g, ' ').replace(/\\s+/g, ' ').trim();\n  let cambio = true;\n  while (cambio) {\n    cambio = false;\n    for (const sufijo of SUFIJOS_SOCIETARIOS) {\n      if (texto === sufijo) continue;\n      if (texto.endsWith(' ' + sufijo)) {\n        texto = texto.slice(0, -(sufijo.length + 1)).trim();\n        cambio = true;\n      }\n    }\n  }\n  return texto;\n}\n\n// Clave para detectar duplicados: el RUT manda; si no hay RUT válido, el dominio; si no, el nombre.\nfunction dedupKey({ rut, dominio, razonSocial }) {\n  const r = parseRut(rut);\n  if (r.valido) return `rut:${r.rut}`;\n  const d = normalizarDominio(dominio);\n  if (d) return `dom:${d}`;\n  const n = normalizarRazonSocial(razonSocial);\n  return n ? `nom:${n}` : null;\n}\n\n// Palabras que describen el giro y no identifican a una empresa: no sirven solas como dominio\n// ni como prueba de que un sitio pertenece a la empresa.\nconst PALABRAS_GENERICAS = new Set([\n  'sociedad', 'inversiones', 'inversion', 'comercial', 'comercializadora', 'servicios', 'empresa',\n  'empresas', 'grupo', 'inmobiliaria', 'constructora', 'transportes', 'transporte', 'agricola',\n  'ingenieria', 'clinica', 'centro', 'chile', 'chilena', 'holding', 'asesorias', 'consultora',\n  'consultores', 'distribuidora', 'importadora', 'exportadora', 'gestion', 'desarrollo',\n  'proyectos', 'capital', 'negocios', 'compania', 'corporacion', 'spa', 'limitada', 'del', 'los',\n  'las', 'de', 'la', 'el', 'y', 'e', 'en', 'para', 'con',\n]);\n\nfunction palabrasDistintivas(razonSocial) {\n  return normalizarRazonSocial(razonSocial)\n    .replace(/ñ/g, 'n')\n    .split(' ')\n    .filter((p) => p.length >= 4 && !PALABRAS_GENERICAS.has(p));\n}\n\n// Candidatos de dominio a partir de la razón social:\n// \"Inversiones Club Exponencial SpA\" -> clubexponencial.cl, club-exponencial.cl, exponencial.cl, ...\nfunction candidatosDominio(razonSocial) {\n  const palabras = normalizarRazonSocial(razonSocial).replace(/ñ/g, 'n').split(' ').filter(Boolean);\n  const sinGiro = palabras.filter((p) => !PALABRAS_GENERICAS.has(p));\n  const slugs = new Set();\n  if (palabras.length) slugs.add(palabras.join(''));\n  if (sinGiro.length) {\n    slugs.add(sinGiro.join(''));\n    if (sinGiro.length > 1) slugs.add(sinGiro.join('-'));\n    if (sinGiro.length > 2) slugs.add(sinGiro.slice(0, 2).join(''));\n    if (sinGiro[0].length >= 5) slugs.add(sinGiro[0]);\n  }\n  const candidatos = [];\n  for (const slug of slugs) {\n    if (slug.length < 4 || slug.length > 40) continue;\n    candidatos.push(`${slug}.cl`, `${slug}.com`);\n  }\n  return candidatos.slice(0, 8);\n}\n\n// Extracción de señales de cumplimiento desde el HTML de un sitio y puntaje por reglas\n// (ver docs/icp-rubrica.md). Sin dependencias: se antepone a los nodos Code de n8n.\n\nconst DOMINIO_ESTACIONADO = /(domain (is )?for sale|este dominio (est[aá] )?(a la venta|disponible)|dominio en venta|parked (free|domain)|sedo\\.com|dan\\.com|hugedomains|godaddy\\.com\\/domainsearch|this domain is (registered|parked)|nic chile.*dominio|cuenta suspendida|account suspended|coming soon|sitio en construcci[oó]n|under construction)/i;\n\nconst TRACKERS = /(googletagmanager\\.com|google-analytics\\.com|gtag\\(|fbq\\(|connect\\.facebook\\.net|hotjar|clarity\\.ms|tiktok\\.com\\/i18n\\/pixel|analytics\\.tiktok|doubleclick\\.net|hs-scripts\\.com|linkedin\\.com\\/insight|snap\\.licdn)/i;\nconst BANNER_COOKIES = /(cookiebot|onetrust|cookieyes|cookie-law|cookielawinfo|complianz|cookie[-_ ]?consent|cookie[-_ ]?banner|aceptar (todas las )?cookies|usamos cookies|utilizamos cookies|este sitio (web )?utiliza cookies|pol[ií]tica de cookies)/i;\n// Señales de interacción: se buscan en el TEXTO VISIBLE (no en el código, donde un plugin\n// instalado y sin usar —woocommerce, vtex— o la palabra \"login\" de un script daban falsos positivos).\nconst LOGIN_TEXTO = /\\b(iniciar sesion|inicia sesion|mi cuenta|ingresa a tu cuenta|ingresar a tu cuenta|log ?in|sign in|acceso clientes|portal (de )?clientes|sucursal virtual)\\b/i;\nconst LOGIN_ENLACE = /href=[\"'][^\"']*(login|signin|sign-in|ingresar|mi-cuenta|my-account|\\/account|portal|sucursal)[^\"']*[\"']/i;\nconst TIENDA_TEXTO = /\\b(anadir al carrito|agregar al carro|agregar al carrito|comprar ahora|ver carrito|tu carrito|carro de compras|finalizar compra|ir a pagar)\\b/i;\nconst PRECIO = /\\$\\s?\\d{1,3}(?:[.,]\\d{3})+/g;  // $12.990 o $12,990 (Shopify)\nconst AGENDA_TEXTO = /\\b(agenda tu hora|reserva tu hora|reservar hora|agendar (una )?(hora|cita)|reserva online|agenda online)\\b/i;\nconst PLATAFORMA_TIENDA = /(woocommerce|shopify|jumpseller|vtex|prestashop|magento|bsale)/i;\nconst SITIO_MINIMO = /(coming soon|opening soon|proximamente|en construccion|under construction|just another wordpress site|sitio en mantenimiento|estamos trabajando en nuestro sitio)/i;\nconst ENLACE_POLITICA = /(privacidad|privacy|datos[-_ ]personales|proteccion[-_ ]de[-_ ]datos|protecci%c3%b3n|aviso[-_ ]legal|tratamiento[-_ ]de[-_ ]datos)/i;\nconst CONTACTO_PRIVACIDAD = /((privacidad|datos|dpo|protecciondedatos|datospersonales)@[a-z0-9.-]+\\.[a-z]{2,}|delegado de protecci[oó]n de datos|encargado de (la )?protecci[oó]n de datos|oficial de (protecci[oó]n de )?datos)/i;\n\nfunction quitarTildes(texto) {\n  return String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\nfunction textoVisible(html) {\n  return String(html || '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&[a-z]+;/gi, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction titulo(html) {\n  const m = String(html || '').match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);\n  return m ? textoVisible(m[1]) : '';\n}\n\n// Formularios que piden datos de personas (email, teléfono, RUT o nombre).\nfunction tieneFormularioDatos(html) {\n  const forms = String(html || '').match(/<form[\\s\\S]*?<\\/form>/gi) || [];\n  return forms.some((f) => /type=[\"']?(email|tel)|name=[\"']?[^\"'>]*(email|correo|telefono|phone|rut|nombre|name)/i.test(f));\n}\n\n// El nodo HTTP Request de n8n entrega el cuerpo en `body` o en `data` según la respuesta\n// (con fullResponse y responseFormat=text). Se lee siempre a través de esta función.\nfunction cuerpoRespuesta(r) {\n  if (!r) return null;\n  for (const valor of [r.body, r.data]) {\n    if (typeof valor === 'string') return valor;\n  }\n  return null;\n}\n\n// El sandbox del nodo Code de n8n no expone la clase global URL: parser mínimo propio.\nfunction partirUrl(url) {\n  const m = String(url || '').match(/^(https?):\\/\\/([^/?#]+)([^?#]*)/i);\n  if (!m) return null;\n  return { protocolo: m[1].toLowerCase(), host: m[2].toLowerCase().replace(/:\\d+$/, ''), ruta: m[3] || '/' };\n}\n\nfunction resolverUrl(href, baseUrl) {\n  const base = partirUrl(baseUrl);\n  const h = String(href || '').trim().split('#')[0];\n  if (!base || !h || /^(mailto|tel|javascript|data):/i.test(h)) return null;\n  if (/^https?:\\/\\//i.test(h)) return h;\n  if (h.startsWith('//')) return base.protocolo + ':' + h;\n  const origen = base.protocolo + '://' + base.host;\n  if (h.startsWith('/')) return origen + h;\n  const dir = base.ruta.replace(/[^/]*$/, '') || '/';\n  return origen + dir + h.replace(/^\\.\\//, '');\n}\n\n// Busca el primer enlace del mismo sitio cuyo href o texto apunte a la política de privacidad.\nfunction enlacePolitica(html, baseUrl) {\n  const re = /<a\\s[^>]*href=[\"']([^\"'#]+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n  const base = partirUrl(baseUrl);\n  if (!base) return null;\n  let m;\n  while ((m = re.exec(String(html || ''))) !== null) {\n    const href = m[1];\n    const texto = textoVisible(m[2]);\n    if (!ENLACE_POLITICA.test(href) && !ENLACE_POLITICA.test(quitarTildes(texto))) continue;\n    const url = resolverUrl(href, baseUrl);\n    const partes = partirUrl(url);\n    if (!partes || partes.host.replace(/^www\\./, '') !== base.host.replace(/^www\\./, '')) continue;\n    return url;\n  }\n  return null;\n}\n\n// Interpreta robots.txt para User-agent: * y devuelve las rutas prohibidas.\nfunction reglasRobots(texto) {\n  const lineas = String(texto || '').split(/\\r?\\n/).map((l) => l.replace(/#.*$/, '').trim());\n  const disallow = [];\n  let aplica = false;\n  let enGrupoAgentes = false;\n  for (const linea of lineas) {\n    const m = linea.match(/^([a-z-]+)\\s*:\\s*(.*)$/i);\n    if (!m) continue;\n    const campo = m[1].toLowerCase();\n    const valor = m[2].trim();\n    if (campo === 'user-agent') {\n      if (!enGrupoAgentes) aplica = false;\n      enGrupoAgentes = true;\n      if (valor === '*') aplica = true;\n    } else {\n      enGrupoAgentes = false;\n      if (aplica && campo === 'disallow' && valor) disallow.push(valor);\n    }\n  }\n  return disallow;\n}\n\nfunction rutaPermitida(disallow, ruta) {\n  return !disallow.some((d) => d === '/' || ruta.startsWith(d));\n}\n\n// Verifica que el HTML de un dominio candidato corresponda a la empresa.\n// `nombre` es la razón social normalizada (sin sufijos) y `palabras` sus palabras distintivas.\n// Reglas, de más a menos fuerte:\n//  - el sitio muestra el RUT de la empresa;\n//  - nombre de una sola palabra (una marca, ej. \"simelec\"): basta con que aparezca en el título;\n//  - nombre con varias palabras: la frase completa (o la de sus palabras distintivas, si son 2+)\n//    debe aparecer en el título o el texto. Una sola palabra suelta (\"gonzalez\", \"minera\") no basta.\n// Devuelve { ok, evidencia, puntos }.\nfunction verificarSitio(html, { rut, palabras, nombre = '' }) {\n  if (!html || html.length < 200) return { ok: false, evidencia: 'sin_contenido', puntos: 0 };\n  const visible = textoVisible(html);\n  const enVenta = /(is for sale|en venta|hugedomains|sedo|dan\\.com|afternic|domain parking|parked)/i.test(titulo(html));\n  if (enVenta || (DOMINIO_ESTACIONADO.test(visible.slice(0, 5000)) && visible.length < 4000)) {\n    return { ok: false, evidencia: 'estacionado', puntos: 0 };\n  }\n  const tit = quitarTildes(titulo(html).toLowerCase());\n  const cuerpo = quitarTildes(visible.toLowerCase());\n  const rutNum = String(rut || '').split('-')[0];\n  if (rutNum && rutNum.length >= 8) {\n    const rutConPuntos = rutNum.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.');\n    if (cuerpo.includes(rutNum) || cuerpo.includes(rutConPuntos)) return { ok: true, evidencia: 'rut', puntos: 3 };\n  }\n  const limpiar = (t) => ' ' + t.replace(/ñ/g, 'n').replace(/[^a-z0-9]+/g, ' ').trim() + ' ';\n  const titL = limpiar(tit);\n  const cuerpoL = limpiar(cuerpo);\n  const nombreL = limpiar(quitarTildes(String(nombre).toLowerCase())).trim();\n  const palabrasNombre = nombreL.split(' ').filter(Boolean);\n  if (palabrasNombre.length === 1 && palabras.length === 1 && palabras[0].length >= 5) {\n    if (titL.includes(' ' + palabras[0] + ' ')) return { ok: true, evidencia: 'marca_en_titulo', puntos: 2 };\n    return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n  }\n  const frases = [nombreL];\n  if (palabras.length >= 2) frases.push(palabras.join(' '));\n  for (const frase of frases) {\n    if (!frase || frase.split(' ').length < 2) continue;\n    if (titL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_titulo', puntos: 2 };\n    if (cuerpoL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_texto', puntos: 1 };\n  }\n  return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n}\n\n// Fragmento del texto alrededor de la coincidencia: queda como evidencia auditable de la señal.\nfunction fragmento(texto, re) {\n  const m = re.exec(texto);\n  re.lastIndex = 0;\n  if (!m) return null;\n  return texto.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40).trim();\n}\n\nfunction senalesHome(html, baseUrl) {\n  const visible = textoVisible(html);\n  const visibleSinTildes = quitarTildes(visible).toLowerCase();\n  const crudo = String(html || '');\n  const palabras = visible.split(' ').filter(Boolean).length;\n  const precios = (visible.match(PRECIO) || []).length;\n\n  // \"Próximamente\" en un menú no hace mínimo a un sitio con contenido: solo cuenta en el título o en sitios pequeños.\n  const avisoEnConstruccion = SITIO_MINIMO.test(quitarTildes(titulo(html))) ||\n    (palabras < 400 && SITIO_MINIMO.test(quitarTildes(visible.slice(0, 3000))));\n  const minimo = palabras < 150 || avisoEnConstruccion;\n  const tienePassword = /type=[\"']?password/i.test(crudo);\n  // En un sitio mínimo el \"iniciar sesión\" suele ser el acceso del dueño (p. ej. tienda Shopify cerrada).\n  const login = !minimo && LOGIN_TEXTO.test(visibleSinTildes) && (tienePassword || LOGIN_ENLACE.test(crudo));\n  const textoTienda = TIENDA_TEXTO.test(visibleSinTildes);\n  // Una tienda cuenta solo si se ve operando: botón de carrito/compra y al menos 2 precios, y no es un sitio \"próximamente\".\n  const tienda = textoTienda && precios >= 2 && !minimo;\n  const agenda = AGENDA_TEXTO.test(visibleSinTildes);\n  const formularios = tieneFormularioDatos(crudo);\n\n  return {\n    sitio_activo: true,\n    sitio_minimo: minimo,\n    palabras_visibles: palabras,\n    titulo: titulo(html).slice(0, 120),\n    politica_url: enlacePolitica(html, baseUrl),\n    banner_cookies: BANNER_COOKIES.test(crudo),\n    trackers: TRACKERS.test(crudo),\n    formularios_datos: formularios,\n    login,\n    tienda_online: tienda,\n    agenda_online: agenda,\n    plataforma_tienda: (crudo.match(PLATAFORMA_TIENDA) || [null])[0],\n    contacto_privacidad: CONTACTO_PRIVACIDAD.test(crudo),\n    evidencias: {\n      login: login ? fragmento(visibleSinTildes, LOGIN_TEXTO) : null,\n      tienda_online: tienda ? fragmento(visibleSinTildes, TIENDA_TEXTO) : null,\n      agenda_online: agenda ? fragmento(visibleSinTildes, AGENDA_TEXTO) : null,\n      sitio_minimo: minimo ? (palabras < 150 ? palabras + ' palabras visibles' : fragmento(quitarTildes(titulo(html) + ' ' + visible), SITIO_MINIMO)) : null,\n    },\n    extracto: visible.slice(0, 1500),\n  };\n}\n\n// Términos propios del cuerpo de una política (no de un pie de página con el enlace \"Privacidad\").\nconst TERMINOS_POLITICA = [\n  /datos personales|informacion personal|personal information/, /tratamiento/, /finalidad|proposito|fines/,\n  /derechos?( de)? (acceso|rectificacion|cancelacion|oposicion|arco)|ejercer (sus|tus) derechos/,\n  /consentimiento/, /terceros|proveedores de servicios/, /conserva(cion|remos)|retencion|plazo/,\n  /cookies/, /seguridad de (la informacion|los datos|sus datos)/,\n];\n// Políticas generadas por la plataforma o por un generador: válidas, pero genéricas.\nconst PLANTILLA_PLATAFORMA = /(cuenta con tecnologia de shopify|con tecnologia de shopify|powered by shopify|esta tienda (funciona|esta alojada) (con|en) shopify|shopify inc)/;\nconst PLANTILLA_GENERADOR = /(termly|iubenda|privacypolicies\\.com|generador de (politicas|terminos)|termsfeed|freeprivacypolicy)/;\n\n// Rutas conocidas de la política según la plataforma del sitio (cuando la portada no la enlaza).\nconst RUTA_POLITICA_PLATAFORMA = {\n  shopify: '/policies/privacy-policy',\n};\n\nfunction senalesPolitica(html) {\n  const crudo = String(html || '');\n  const visible = quitarTildes(textoVisible(crudo)).toLowerCase();\n  if (!visible || visible.length < 300) return { politica_privacidad: false };\n  const encabezado = quitarTildes(titulo(crudo) + ' ' + ((crudo.match(/<h1[^>]*>([\\s\\S]*?)<\\/h1>/i) || [])[1] || '')).toLowerCase();\n  const tituloDePolitica = /(privacidad|privacy|datos personales|proteccion de datos|tratamiento de datos)/.test(encabezado);\n  const terminos = TERMINOS_POLITICA.filter((re) => re.test(visible)).length;\n  // Es una política si su título/H1 lo dice y el cuerpo usa al menos 3 términos propios de una.\n  const esPolitica = tituloDePolitica && terminos >= 3;\n  if (!esPolitica) return { politica_privacidad: false, politica_terminos: terminos };\n  // Año de la política: solo el que acompaña a \"actualización / vigencia / modificación\", nunca el \"© 2026\" del pie.\n  const fechas = [...visible.matchAll(/(actualiza\\w*|vigen\\w*|modifica\\w*|fecha de (entrada|publicacion)\\w*)[^.]{0,60}?\\b(20[12]\\d)\\b/g)]\n    .map((m) => Number(m[3])).filter((a) => a <= 2026);\n  const origen = PLANTILLA_PLATAFORMA.test(visible) ? 'plantilla_shopify'\n    : PLANTILLA_GENERADOR.test(visible) ? 'plantilla_generador' : 'propia';\n  return {\n    politica_privacidad: true,\n    politica_terminos: terminos,\n    politica_origen: origen,\n    menciona_ley_nueva: /21\\.?719/.test(visible),\n    menciona_ley_antigua: /19\\.?628/.test(visible),\n    politica_anio: fechas.length ? Math.max(...fechas) : null,\n    contacto_privacidad_politica: CONTACTO_PRIVACIDAD.test(visible),\n  };\n}\n\n// Puntaje por reglas SIN el componente de rubro (lo agrega la etapa de IA).\nfunction puntajeReglas(s, { capital, anioConstitucion, tamano, anioActual = 2026 }) {\n  let exposicion = 0;\n  if (s.formularios_datos) exposicion += 6;\n  if (s.login) exposicion += 6;\n  if (s.tienda_online) exposicion += 6;\n  if (s.agenda_online) exposicion += 6;\n  if (s.trackers) exposicion += 4;\n  exposicion = Math.min(exposicion, 20);\n\n  let brecha = 0;\n  if (!s.politica_privacidad) brecha += 20;\n  else if (!s.menciona_ley_nueva || (s.politica_anio && s.politica_anio < 2025)) brecha += 12;\n  // Una plantilla de la plataforma no está adaptada al negocio ni a la ley chilena: la tienda\n  // sigue siendo responsable de los datos de sus clientes aunque use Shopify.\n  if (s.politica_privacidad && s.politica_origen && s.politica_origen !== 'propia' && !s.menciona_ley_nueva) brecha += 4;\n  if (!s.contacto_privacidad && !s.contacto_privacidad_politica) brecha += 10;\n  if (s.trackers && !s.banner_cookies) brecha += 10;\n  brecha = Math.min(brecha, 40);\n\n  // Un sitio mínimo (landing vacía, \"próximamente\") no demuestra operación: no suma por sitio activo.\n  let viabilidad = s.sitio_activo && !s.sitio_minimo ? 5 : 0;\n  // Tamaño según ventas (SII) si existe; si no, el capital declarado como proxy.\n  if (tamano === 'grande' || tamano === 'mediana') viabilidad += 10;\n  else if (tamano === 'pequena') viabilidad += 5;\n  else if (capital >= 200000000) viabilidad += 10;\n  else if (capital >= 50000000) viabilidad += 5;\n  if (anioConstitucion && anioActual - anioConstitucion >= 5) viabilidad += 5;\n  viabilidad = Math.min(viabilidad, 20);\n\n  return { exposicion_sin_rubro: exposicion, brecha, viabilidad, total_sin_rubro: exposicion + brecha + viabilidad };\n}\n\nconst PUNTOS_RUBRO = {\n  salud: 20, fintech_seguros: 20, educacion: 20, rrhh: 20,\n  retail_ecommerce: 14, saas_tecnologia: 14, inmobiliario: 14, marketing: 14,\n  otro: 5,\n};\n\n// Puntaje final: reglas + rubro (topado a 40 en exposición) + ajuste de la IA (±15), en 0..100.\nfunction puntajeFinal(reglas, rubro, ajuste) {\n  const puntosRubro = PUNTOS_RUBRO[rubro] ?? 5;\n  const exposicion = Math.min(reglas.exposicion_sin_rubro + puntosRubro, 40);\n  const ajusteAcotado = Math.max(-15, Math.min(15, Number(ajuste) || 0));\n  const total = exposicion + reglas.brecha + reglas.viabilidad + ajusteAcotado;\n  return Math.max(0, Math.min(100, Math.round(total)));\n}\n\nfunction estadoPorPuntaje(score, confianza) {\n  if (Number(confianza) < 0.6) return 'revision';\n  if (score >= 70) return 'calificada';\n  if (score >= 40) return 'revision';\n  return 'descartada';\n}\n\n// Nodo \"Verificar dominio\" (workflow B). Requiere lib/normalize.js, lib/senales.js\n// Elige, por empresa, el candidato cuyo sitio menciona su RUT o su nombre; extrae señales de la portada.\nconst params = $('Parámetros B').first().json;\nconst empresas = $('Leer empresas nuevas').all().map((i) => i.json).filter((e) => e.id);\nconst candidatos = $('Evaluar robots').all();\nconst porId = Object.fromEntries(empresas.map((e) => [e.id, e]));\nconst mejores = {};\n// Diagnóstico de la etapa: por qué se descartó cada candidato.\nconst diag = { http_200: 0, http_otro: 0, error_red: 0, cuerpo_no_texto: 0, sin_contenido: 0,\n  estacionado: 0, no_coincide: 0, verificado: 0 };\n\n$input.all().forEach((item, i) => {\n  const c = candidatos[i].json;\n  const r = item.json;\n  const emp = porId[c.row_id];\n  if (!emp) return;\n  if (r.error || typeof r.statusCode !== 'number') { diag.error_red++; return; }\n  if (r.statusCode !== 200) { diag.http_otro++; return; }\n  diag.http_200++;\n  const cuerpo = cuerpoRespuesta(r);\n  if (cuerpo === null) { diag.cuerpo_no_texto++; return; }\n  // Un sitio informado por un registro oficial se acepta si responde con contenido real\n  // (no estacionado ni vacío); igual se intenta la verificación por RUT/nombre para la evidencia.\n  const nombreBase = emp.nombre_comercial || emp.razon_social;\n  let v = verificarSitio(cuerpo, { rut: emp.rut, palabras: palabrasDistintivas(nombreBase),\n    nombre: normalizarRazonSocial(nombreBase) });\n  if (!v.ok && v.evidencia === 'no_coincide' && nombreBase !== emp.razon_social) {\n    v = verificarSitio(cuerpo, { rut: emp.rut, palabras: palabrasDistintivas(emp.razon_social),\n      nombre: normalizarRazonSocial(emp.razon_social) });\n  }\n  if (!v.ok && c.desde_fuente && v.evidencia === 'no_coincide') v = { ok: true, evidencia: 'sitio_registro_oficial', puntos: 3 };\n  diag[v.ok ? 'verificado' : v.evidencia] = (diag[v.ok ? 'verificado' : v.evidencia] || 0) + 1;\n  if (!v.ok) return;\n  const previo = mejores[c.row_id];\n  const preferirCl = previo && v.puntos === previo.v.puntos && c.host.endsWith('.cl') && !previo.c.host.endsWith('.cl');\n  if (!previo || v.puntos > previo.v.puntos || preferirCl) mejores[c.row_id] = { c, v, html: cuerpo };\n});\n\n// Un dominio que calza con dos empresas distintas no identifica a ninguna: se descarta.\n// Excepción: si un registro oficial informó ese sitio (p. ej. una red de clínicas cuyos centros\n// acreditados comparten la web), el dominio compartido es legítimo.\nconst usos = {};\nfor (const m of Object.values(mejores)) usos[m.c.host.replace(/^www\\./, '')] = (usos[m.c.host.replace(/^www\\./, '')] || 0) + 1;\nfor (const [id, m] of Object.entries(mejores)) {\n  if (usos[m.c.host.replace(/^www\\./, '')] > 1 && !m.c.desde_fuente) {\n    delete mejores[id]; diag.dominio_compartido = (diag.dominio_compartido || 0) + 1;\n  }\n}\n\nreturn empresas.map((e) => {\n  const base = { row_id: e.id, rut: e.rut, razon_social: e.razon_social, capital: e.capital,\n    anio_constitucion: e.anio_constitucion, tamano: e.tamano, run_id: params.run_id, diag };\n  const m = mejores[e.id];\n  if (!m) return { json: { ...base, dominio: '', estado: 'sin_dominio' } };\n  const home = senalesHome(m.html, 'https://' + m.c.host + '/');\n  // Si la portada no enlaza una política, se prueba la ruta conocida de la plataforma (o la más común).\n  const plataforma = String(home.plataforma_tienda || '').toLowerCase();\n  const rutaPorDefecto = RUTA_POLITICA_PLATAFORMA[plataforma] || '/politica-de-privacidad';\n  const politicaUrl = home.politica_url || 'https://' + m.c.host + rutaPorDefecto;\n  const politicaPermitida = rutaPermitida(m.c.disallow, (partirUrl(politicaUrl) || { ruta: '/' }).ruta);\n  return { json: { ...base, dominio: m.c.host, verificacion: m.v.evidencia, home,\n    politica_enlazada: Boolean(home.politica_url),\n    politica_url: politicaPermitida ? politicaUrl : 'https://' + m.c.host + '/',\n    estado: 'con_dominio' } };\n});\n"
+      },
+      "name": "Verificar dominio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.estado }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "con_dominio"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "¿Tiene dominio?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.politica_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "ProspeccionLey21719Bot/0.1 (respeta robots.txt)"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 500
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "name": "Descargar política",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1984,
+        112
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Extracción de señales de cumplimiento desde el HTML de un sitio y puntaje por reglas\n// (ver docs/icp-rubrica.md). Sin dependencias: se antepone a los nodos Code de n8n.\n\nconst DOMINIO_ESTACIONADO = /(domain (is )?for sale|este dominio (est[aá] )?(a la venta|disponible)|dominio en venta|parked (free|domain)|sedo\\.com|dan\\.com|hugedomains|godaddy\\.com\\/domainsearch|this domain is (registered|parked)|nic chile.*dominio|cuenta suspendida|account suspended|coming soon|sitio en construcci[oó]n|under construction)/i;\n\nconst TRACKERS = /(googletagmanager\\.com|google-analytics\\.com|gtag\\(|fbq\\(|connect\\.facebook\\.net|hotjar|clarity\\.ms|tiktok\\.com\\/i18n\\/pixel|analytics\\.tiktok|doubleclick\\.net|hs-scripts\\.com|linkedin\\.com\\/insight|snap\\.licdn)/i;\nconst BANNER_COOKIES = /(cookiebot|onetrust|cookieyes|cookie-law|cookielawinfo|complianz|cookie[-_ ]?consent|cookie[-_ ]?banner|aceptar (todas las )?cookies|usamos cookies|utilizamos cookies|este sitio (web )?utiliza cookies|pol[ií]tica de cookies)/i;\n// Señales de interacción: se buscan en el TEXTO VISIBLE (no en el código, donde un plugin\n// instalado y sin usar —woocommerce, vtex— o la palabra \"login\" de un script daban falsos positivos).\nconst LOGIN_TEXTO = /\\b(iniciar sesion|inicia sesion|mi cuenta|ingresa a tu cuenta|ingresar a tu cuenta|log ?in|sign in|acceso clientes|portal (de )?clientes|sucursal virtual)\\b/i;\nconst LOGIN_ENLACE = /href=[\"'][^\"']*(login|signin|sign-in|ingresar|mi-cuenta|my-account|\\/account|portal|sucursal)[^\"']*[\"']/i;\nconst TIENDA_TEXTO = /\\b(anadir al carrito|agregar al carro|agregar al carrito|comprar ahora|ver carrito|tu carrito|carro de compras|finalizar compra|ir a pagar)\\b/i;\nconst PRECIO = /\\$\\s?\\d{1,3}(?:[.,]\\d{3})+/g;  // $12.990 o $12,990 (Shopify)\nconst AGENDA_TEXTO = /\\b(agenda tu hora|reserva tu hora|reservar hora|agendar (una )?(hora|cita)|reserva online|agenda online)\\b/i;\nconst PLATAFORMA_TIENDA = /(woocommerce|shopify|jumpseller|vtex|prestashop|magento|bsale)/i;\nconst SITIO_MINIMO = /(coming soon|opening soon|proximamente|en construccion|under construction|just another wordpress site|sitio en mantenimiento|estamos trabajando en nuestro sitio)/i;\nconst ENLACE_POLITICA = /(privacidad|privacy|datos[-_ ]personales|proteccion[-_ ]de[-_ ]datos|protecci%c3%b3n|aviso[-_ ]legal|tratamiento[-_ ]de[-_ ]datos)/i;\nconst CONTACTO_PRIVACIDAD = /((privacidad|datos|dpo|protecciondedatos|datospersonales)@[a-z0-9.-]+\\.[a-z]{2,}|delegado de protecci[oó]n de datos|encargado de (la )?protecci[oó]n de datos|oficial de (protecci[oó]n de )?datos)/i;\n\nfunction quitarTildes(texto) {\n  return String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '');\n}\n\nfunction textoVisible(html) {\n  return String(html || '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&[a-z]+;/gi, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction titulo(html) {\n  const m = String(html || '').match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);\n  return m ? textoVisible(m[1]) : '';\n}\n\n// Formularios que piden datos de personas (email, teléfono, RUT o nombre).\nfunction tieneFormularioDatos(html) {\n  const forms = String(html || '').match(/<form[\\s\\S]*?<\\/form>/gi) || [];\n  return forms.some((f) => /type=[\"']?(email|tel)|name=[\"']?[^\"'>]*(email|correo|telefono|phone|rut|nombre|name)/i.test(f));\n}\n\n// El nodo HTTP Request de n8n entrega el cuerpo en `body` o en `data` según la respuesta\n// (con fullResponse y responseFormat=text). Se lee siempre a través de esta función.\nfunction cuerpoRespuesta(r) {\n  if (!r) return null;\n  for (const valor of [r.body, r.data]) {\n    if (typeof valor === 'string') return valor;\n  }\n  return null;\n}\n\n// El sandbox del nodo Code de n8n no expone la clase global URL: parser mínimo propio.\nfunction partirUrl(url) {\n  const m = String(url || '').match(/^(https?):\\/\\/([^/?#]+)([^?#]*)/i);\n  if (!m) return null;\n  return { protocolo: m[1].toLowerCase(), host: m[2].toLowerCase().replace(/:\\d+$/, ''), ruta: m[3] || '/' };\n}\n\nfunction resolverUrl(href, baseUrl) {\n  const base = partirUrl(baseUrl);\n  const h = String(href || '').trim().split('#')[0];\n  if (!base || !h || /^(mailto|tel|javascript|data):/i.test(h)) return null;\n  if (/^https?:\\/\\//i.test(h)) return h;\n  if (h.startsWith('//')) return base.protocolo + ':' + h;\n  const origen = base.protocolo + '://' + base.host;\n  if (h.startsWith('/')) return origen + h;\n  const dir = base.ruta.replace(/[^/]*$/, '') || '/';\n  return origen + dir + h.replace(/^\\.\\//, '');\n}\n\n// Busca el primer enlace del mismo sitio cuyo href o texto apunte a la política de privacidad.\nfunction enlacePolitica(html, baseUrl) {\n  const re = /<a\\s[^>]*href=[\"']([^\"'#]+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\n  const base = partirUrl(baseUrl);\n  if (!base) return null;\n  let m;\n  while ((m = re.exec(String(html || ''))) !== null) {\n    const href = m[1];\n    const texto = textoVisible(m[2]);\n    if (!ENLACE_POLITICA.test(href) && !ENLACE_POLITICA.test(quitarTildes(texto))) continue;\n    const url = resolverUrl(href, baseUrl);\n    const partes = partirUrl(url);\n    if (!partes || partes.host.replace(/^www\\./, '') !== base.host.replace(/^www\\./, '')) continue;\n    return url;\n  }\n  return null;\n}\n\n// Interpreta robots.txt para User-agent: * y devuelve las rutas prohibidas.\nfunction reglasRobots(texto) {\n  const lineas = String(texto || '').split(/\\r?\\n/).map((l) => l.replace(/#.*$/, '').trim());\n  const disallow = [];\n  let aplica = false;\n  let enGrupoAgentes = false;\n  for (const linea of lineas) {\n    const m = linea.match(/^([a-z-]+)\\s*:\\s*(.*)$/i);\n    if (!m) continue;\n    const campo = m[1].toLowerCase();\n    const valor = m[2].trim();\n    if (campo === 'user-agent') {\n      if (!enGrupoAgentes) aplica = false;\n      enGrupoAgentes = true;\n      if (valor === '*') aplica = true;\n    } else {\n      enGrupoAgentes = false;\n      if (aplica && campo === 'disallow' && valor) disallow.push(valor);\n    }\n  }\n  return disallow;\n}\n\nfunction rutaPermitida(disallow, ruta) {\n  return !disallow.some((d) => d === '/' || ruta.startsWith(d));\n}\n\n// Verifica que el HTML de un dominio candidato corresponda a la empresa.\n// `nombre` es la razón social normalizada (sin sufijos) y `palabras` sus palabras distintivas.\n// Reglas, de más a menos fuerte:\n//  - el sitio muestra el RUT de la empresa;\n//  - nombre de una sola palabra (una marca, ej. \"simelec\"): basta con que aparezca en el título;\n//  - nombre con varias palabras: la frase completa (o la de sus palabras distintivas, si son 2+)\n//    debe aparecer en el título o el texto. Una sola palabra suelta (\"gonzalez\", \"minera\") no basta.\n// Devuelve { ok, evidencia, puntos }.\nfunction verificarSitio(html, { rut, palabras, nombre = '' }) {\n  if (!html || html.length < 200) return { ok: false, evidencia: 'sin_contenido', puntos: 0 };\n  const visible = textoVisible(html);\n  const enVenta = /(is for sale|en venta|hugedomains|sedo|dan\\.com|afternic|domain parking|parked)/i.test(titulo(html));\n  if (enVenta || (DOMINIO_ESTACIONADO.test(visible.slice(0, 5000)) && visible.length < 4000)) {\n    return { ok: false, evidencia: 'estacionado', puntos: 0 };\n  }\n  const tit = quitarTildes(titulo(html).toLowerCase());\n  const cuerpo = quitarTildes(visible.toLowerCase());\n  const rutNum = String(rut || '').split('-')[0];\n  if (rutNum && rutNum.length >= 8) {\n    const rutConPuntos = rutNum.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.');\n    if (cuerpo.includes(rutNum) || cuerpo.includes(rutConPuntos)) return { ok: true, evidencia: 'rut', puntos: 3 };\n  }\n  const limpiar = (t) => ' ' + t.replace(/ñ/g, 'n').replace(/[^a-z0-9]+/g, ' ').trim() + ' ';\n  const titL = limpiar(tit);\n  const cuerpoL = limpiar(cuerpo);\n  const nombreL = limpiar(quitarTildes(String(nombre).toLowerCase())).trim();\n  const palabrasNombre = nombreL.split(' ').filter(Boolean);\n  if (palabrasNombre.length === 1 && palabras.length === 1 && palabras[0].length >= 5) {\n    if (titL.includes(' ' + palabras[0] + ' ')) return { ok: true, evidencia: 'marca_en_titulo', puntos: 2 };\n    return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n  }\n  const frases = [nombreL];\n  if (palabras.length >= 2) frases.push(palabras.join(' '));\n  for (const frase of frases) {\n    if (!frase || frase.split(' ').length < 2) continue;\n    if (titL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_titulo', puntos: 2 };\n    if (cuerpoL.includes(' ' + frase + ' ')) return { ok: true, evidencia: 'nombre_en_texto', puntos: 1 };\n  }\n  return { ok: false, evidencia: 'no_coincide', puntos: 0 };\n}\n\n// Fragmento del texto alrededor de la coincidencia: queda como evidencia auditable de la señal.\nfunction fragmento(texto, re) {\n  const m = re.exec(texto);\n  re.lastIndex = 0;\n  if (!m) return null;\n  return texto.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40).trim();\n}\n\nfunction senalesHome(html, baseUrl) {\n  const visible = textoVisible(html);\n  const visibleSinTildes = quitarTildes(visible).toLowerCase();\n  const crudo = String(html || '');\n  const palabras = visible.split(' ').filter(Boolean).length;\n  const precios = (visible.match(PRECIO) || []).length;\n\n  // \"Próximamente\" en un menú no hace mínimo a un sitio con contenido: solo cuenta en el título o en sitios pequeños.\n  const avisoEnConstruccion = SITIO_MINIMO.test(quitarTildes(titulo(html))) ||\n    (palabras < 400 && SITIO_MINIMO.test(quitarTildes(visible.slice(0, 3000))));\n  const minimo = palabras < 150 || avisoEnConstruccion;\n  const tienePassword = /type=[\"']?password/i.test(crudo);\n  // En un sitio mínimo el \"iniciar sesión\" suele ser el acceso del dueño (p. ej. tienda Shopify cerrada).\n  const login = !minimo && LOGIN_TEXTO.test(visibleSinTildes) && (tienePassword || LOGIN_ENLACE.test(crudo));\n  const textoTienda = TIENDA_TEXTO.test(visibleSinTildes);\n  // Una tienda cuenta solo si se ve operando: botón de carrito/compra y al menos 2 precios, y no es un sitio \"próximamente\".\n  const tienda = textoTienda && precios >= 2 && !minimo;\n  const agenda = AGENDA_TEXTO.test(visibleSinTildes);\n  const formularios = tieneFormularioDatos(crudo);\n\n  return {\n    sitio_activo: true,\n    sitio_minimo: minimo,\n    palabras_visibles: palabras,\n    titulo: titulo(html).slice(0, 120),\n    politica_url: enlacePolitica(html, baseUrl),\n    banner_cookies: BANNER_COOKIES.test(crudo),\n    trackers: TRACKERS.test(crudo),\n    formularios_datos: formularios,\n    login,\n    tienda_online: tienda,\n    agenda_online: agenda,\n    plataforma_tienda: (crudo.match(PLATAFORMA_TIENDA) || [null])[0],\n    contacto_privacidad: CONTACTO_PRIVACIDAD.test(crudo),\n    evidencias: {\n      login: login ? fragmento(visibleSinTildes, LOGIN_TEXTO) : null,\n      tienda_online: tienda ? fragmento(visibleSinTildes, TIENDA_TEXTO) : null,\n      agenda_online: agenda ? fragmento(visibleSinTildes, AGENDA_TEXTO) : null,\n      sitio_minimo: minimo ? (palabras < 150 ? palabras + ' palabras visibles' : fragmento(quitarTildes(titulo(html) + ' ' + visible), SITIO_MINIMO)) : null,\n    },\n    extracto: visible.slice(0, 1500),\n  };\n}\n\n// Términos propios del cuerpo de una política (no de un pie de página con el enlace \"Privacidad\").\nconst TERMINOS_POLITICA = [\n  /datos personales|informacion personal|personal information/, /tratamiento/, /finalidad|proposito|fines/,\n  /derechos?( de)? (acceso|rectificacion|cancelacion|oposicion|arco)|ejercer (sus|tus) derechos/,\n  /consentimiento/, /terceros|proveedores de servicios/, /conserva(cion|remos)|retencion|plazo/,\n  /cookies/, /seguridad de (la informacion|los datos|sus datos)/,\n];\n// Políticas generadas por la plataforma o por un generador: válidas, pero genéricas.\nconst PLANTILLA_PLATAFORMA = /(cuenta con tecnologia de shopify|con tecnologia de shopify|powered by shopify|esta tienda (funciona|esta alojada) (con|en) shopify|shopify inc)/;\nconst PLANTILLA_GENERADOR = /(termly|iubenda|privacypolicies\\.com|generador de (politicas|terminos)|termsfeed|freeprivacypolicy)/;\n\n// Rutas conocidas de la política según la plataforma del sitio (cuando la portada no la enlaza).\nconst RUTA_POLITICA_PLATAFORMA = {\n  shopify: '/policies/privacy-policy',\n};\n\nfunction senalesPolitica(html) {\n  const crudo = String(html || '');\n  const visible = quitarTildes(textoVisible(crudo)).toLowerCase();\n  if (!visible || visible.length < 300) return { politica_privacidad: false };\n  const encabezado = quitarTildes(titulo(crudo) + ' ' + ((crudo.match(/<h1[^>]*>([\\s\\S]*?)<\\/h1>/i) || [])[1] || '')).toLowerCase();\n  const tituloDePolitica = /(privacidad|privacy|datos personales|proteccion de datos|tratamiento de datos)/.test(encabezado);\n  const terminos = TERMINOS_POLITICA.filter((re) => re.test(visible)).length;\n  // Es una política si su título/H1 lo dice y el cuerpo usa al menos 3 términos propios de una.\n  const esPolitica = tituloDePolitica && terminos >= 3;\n  if (!esPolitica) return { politica_privacidad: false, politica_terminos: terminos };\n  // Año de la política: solo el que acompaña a \"actualización / vigencia / modificación\", nunca el \"© 2026\" del pie.\n  const fechas = [...visible.matchAll(/(actualiza\\w*|vigen\\w*|modifica\\w*|fecha de (entrada|publicacion)\\w*)[^.]{0,60}?\\b(20[12]\\d)\\b/g)]\n    .map((m) => Number(m[3])).filter((a) => a <= 2026);\n  const origen = PLANTILLA_PLATAFORMA.test(visible) ? 'plantilla_shopify'\n    : PLANTILLA_GENERADOR.test(visible) ? 'plantilla_generador' : 'propia';\n  return {\n    politica_privacidad: true,\n    politica_terminos: terminos,\n    politica_origen: origen,\n    menciona_ley_nueva: /21\\.?719/.test(visible),\n    menciona_ley_antigua: /19\\.?628/.test(visible),\n    politica_anio: fechas.length ? Math.max(...fechas) : null,\n    contacto_privacidad_politica: CONTACTO_PRIVACIDAD.test(visible),\n  };\n}\n\n// Puntaje por reglas SIN el componente de rubro (lo agrega la etapa de IA).\nfunction puntajeReglas(s, { capital, anioConstitucion, tamano, anioActual = 2026 }) {\n  let exposicion = 0;\n  if (s.formularios_datos) exposicion += 6;\n  if (s.login) exposicion += 6;\n  if (s.tienda_online) exposicion += 6;\n  if (s.agenda_online) exposicion += 6;\n  if (s.trackers) exposicion += 4;\n  exposicion = Math.min(exposicion, 20);\n\n  let brecha = 0;\n  if (!s.politica_privacidad) brecha += 20;\n  else if (!s.menciona_ley_nueva || (s.politica_anio && s.politica_anio < 2025)) brecha += 12;\n  // Una plantilla de la plataforma no está adaptada al negocio ni a la ley chilena: la tienda\n  // sigue siendo responsable de los datos de sus clientes aunque use Shopify.\n  if (s.politica_privacidad && s.politica_origen && s.politica_origen !== 'propia' && !s.menciona_ley_nueva) brecha += 4;\n  if (!s.contacto_privacidad && !s.contacto_privacidad_politica) brecha += 10;\n  if (s.trackers && !s.banner_cookies) brecha += 10;\n  brecha = Math.min(brecha, 40);\n\n  // Un sitio mínimo (landing vacía, \"próximamente\") no demuestra operación: no suma por sitio activo.\n  let viabilidad = s.sitio_activo && !s.sitio_minimo ? 5 : 0;\n  // Tamaño según ventas (SII) si existe; si no, el capital declarado como proxy.\n  if (tamano === 'grande' || tamano === 'mediana') viabilidad += 10;\n  else if (tamano === 'pequena') viabilidad += 5;\n  else if (capital >= 200000000) viabilidad += 10;\n  else if (capital >= 50000000) viabilidad += 5;\n  if (anioConstitucion && anioActual - anioConstitucion >= 5) viabilidad += 5;\n  viabilidad = Math.min(viabilidad, 20);\n\n  return { exposicion_sin_rubro: exposicion, brecha, viabilidad, total_sin_rubro: exposicion + brecha + viabilidad };\n}\n\nconst PUNTOS_RUBRO = {\n  salud: 20, fintech_seguros: 20, educacion: 20, rrhh: 20,\n  retail_ecommerce: 14, saas_tecnologia: 14, inmobiliario: 14, marketing: 14,\n  otro: 5,\n};\n\n// Puntaje final: reglas + rubro (topado a 40 en exposición) + ajuste de la IA (±15), en 0..100.\nfunction puntajeFinal(reglas, rubro, ajuste) {\n  const puntosRubro = PUNTOS_RUBRO[rubro] ?? 5;\n  const exposicion = Math.min(reglas.exposicion_sin_rubro + puntosRubro, 40);\n  const ajusteAcotado = Math.max(-15, Math.min(15, Number(ajuste) || 0));\n  const total = exposicion + reglas.brecha + reglas.viabilidad + ajusteAcotado;\n  return Math.max(0, Math.min(100, Math.round(total)));\n}\n\nfunction estadoPorPuntaje(score, confianza) {\n  if (Number(confianza) < 0.6) return 'revision';\n  if (score >= 70) return 'calificada';\n  if (score >= 40) return 'revision';\n  return 'descartada';\n}\n\n// Nodo \"Calcular señales\" (workflow B, una vez por item). Requiere lib/senales.js\nconst base = $('Verificar dominio').item.json;\nconst r = $json;\nconst cuerpo = cuerpoRespuesta(r);\nconst politica = r.statusCode === 200 && cuerpo !== null\n  ? senalesPolitica(cuerpo)\n  : { politica_privacidad: false };\nconst senales = {\n  ...base.home,\n  ...politica,\n  politica_url: politica.politica_privacidad ? base.politica_url : '',\n  politica_enlazada: base.politica_enlazada,\n  politica_consultada: base.politica_url,\n  politica_http: r.statusCode || null,\n  politica_bytes: cuerpo === null ? null : cuerpo.length,\n  politica_error: r.error ? String(r.error.message || r.error).slice(0, 120) : null,\n  verificacion: base.verificacion,\n};\nconst reglas = puntajeReglas(senales, { capital: base.capital, anioConstitucion: base.anio_constitucion, tamano: base.tamano });\nreturn {\n  json: {\n    row_id: base.row_id,\n    dominio: base.dominio,\n    senales_json: JSON.stringify({ ...senales, reglas }),\n    score_reglas: reglas.total_sin_rubro,\n    estado: 'enriquecida',\n  },\n};\n"
+      },
+      "name": "Calcular señales",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2208,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.row_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "dominio": "={{ $json.dominio }}",
+            "senales_json": "={{ $json.senales_json }}",
+            "score_reglas": "={{ $json.score_reglas }}",
+            "estado": "={{ $json.estado }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "dominio",
+              "displayName": "dominio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "senales_json",
+              "displayName": "senales_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score_reglas",
+              "displayName": "score_reglas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "estado",
+              "displayName": "estado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Guardar señales",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2432,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_EMPRESAS",
+          "cachedResultName": "empresas"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.row_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "estado": "sin_dominio"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "estado",
+              "displayName": "estado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Marcar sin dominio",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1984,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Resumen de enriquecimiento\" (workflow B). Fila para la tabla `corridas`.\nconst params = $('Parámetros B').first().json;\nconst verificadas = $input.all().map((i) => i.json);\nconst conDominio = verificadas.filter((e) => e.estado === 'con_dominio').length;\nconst candidatos = $('Generar candidatos').all().length;\nconst respondieron = $('Evaluar robots').all().length;\nreturn [{\n  json: {\n    run_id: params.run_id,\n    etapa: 'enriquecimiento',\n    inicio: params.inicio,\n    fin: new Date().toISOString(),\n    procesadas: verificadas.length,\n    enriquecidas: conDominio,\n    sin_dominio: verificadas.length - conDominio,\n    errores: 0,\n    nota: 'candidatos=' + candidatos + ' respondieron=' + respondieron +\n      ' tasa_dominio=' + (verificadas.length ? Math.round((100 * conDominio) / verificadas.length) : 0) + '%' +\n      ' diag=' + JSON.stringify((verificadas[0] || {}).diag || {}),\n  },\n}];\n"
+      },
+      "name": "Resumen de enriquecimiento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TABLA_CORRIDAS",
+          "cachedResultName": "corridas"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "etapa",
+              "displayName": "etapa",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "inicio",
+              "displayName": "inicio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fin",
+              "displayName": "fin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "procesadas",
+              "displayName": "procesadas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "enriquecidas",
+              "displayName": "enriquecidas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sin_dominio",
+              "displayName": "sin_dominio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "errores",
+              "displayName": "errores",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nota",
+              "displayName": "nota",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Registrar corrida B",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1568,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## B · Dominio y enriquecimiento\nPara cada empresa `nueva`: genera dominios candidatos desde la razón social, respeta robots.txt, verifica que el sitio mencione su RUT o nombre, y extrae señales de cumplimiento (política de privacidad, cookies, formularios, trackers). Guarda `senales_json` y el puntaje por reglas.",
+        "height": 200,
+        "width": 560,
+        "color": 5
+      },
+      "name": "Sticky Note 3789350f",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -64
+      ]
+    }
+  ],
+  "connections": {
+    "Iniciar enriquecimiento": {
+      "main": [
+        [
+          {
+            "node": "Parámetros B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parámetros B": {
+      "main": [
+        [
+          {
+            "node": "Leer empresas nuevas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Llamado desde orquestador": {
+      "main": [
+        [
+          {
+            "node": "Parámetros B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer empresas nuevas": {
+      "main": [
+        [
+          {
+            "node": "Generar candidatos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generar candidatos": {
+      "main": [
+        [
+          {
+            "node": "Consultar robots.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Evaluar robots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluar robots": {
+      "main": [
+        [
+          {
+            "node": "Descargar portada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar portada": {
+      "main": [
+        [
+          {
+            "node": "Verificar dominio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar dominio": {
+      "main": [
+        [
+          {
+            "node": "¿Tiene dominio?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Resumen de enriquecimiento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Tiene dominio?": {
+      "main": [
+        [
+          {
+            "node": "Descargar política",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Marcar sin dominio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar política": {
+      "main": [
+        [
+          {
+            "node": "Calcular señales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular señales": {
+      "main": [
+        [
+          {
+            "node": "Guardar señales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumen de enriquecimiento": {
+      "main": [
+        [
+          {
+            "node": "Registrar corrida B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "saveManualExecutions": false,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "binaryMode": "separate"
+  }
+}
