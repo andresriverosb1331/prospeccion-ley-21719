@@ -1,8 +1,8 @@
 # prospeccion-ley-21719
 
-Pipeline de prospección en frío con n8n + IA. Demo que construye en **n8n** un pipeline que toma empresas chilenas de una **fuente pública**, las normaliza y deduplica, busca su sitio web, detecta **señales de cumplimiento de la Ley 21.719** de protección de datos personales y las **califica con IA (Gemini) con revisión humana**, dejando el resultado en una Data Table y en Google Sheets, con métricas de cada corrida.
+Pipeline de prospección en frío con n8n + IA. Demo que construye en **n8n** un pipeline que toma empresas chilenas de **fuentes públicas**, las normaliza y deduplica, busca su sitio web, detecta **señales de cumplimiento de la Ley 21.719** de protección de datos personales y las **califica con IA (Gemini) con revisión humana**, dejando el resultado en una Data Table y en Google Sheets, con métricas de cada corrida.
 
-> **Datos públicos.** Todo el repositorio usa solo información pública de **personas jurídicas** (Registro de Empresas y Sociedades, licencia CC-BY) y de sus sitios web. No contiene datos personales, credenciales ni datos completos de la corrida. Ver [Datos y privacidad](#datos-y-privacidad).
+> **Datos públicos.** Todo el repositorio usa solo información pública de **personas jurídicas** (Registro de Empresas y Sociedades con licencia CC-BY, registro de prestadores de la Superintendencia de Salud y nómina de personas jurídicas del SII) y de sus sitios web. No contiene datos personales, credenciales ni datos completos de la corrida. Ver [Datos y privacidad](#datos-y-privacidad).
 
 ## El problema
 
@@ -13,8 +13,12 @@ La Ley 21.719 entra en vigencia el **1 de diciembre de 2026** (hay un proyecto d
 ```mermaid
 flowchart LR
     RES[(Registro de Empresas<br/>y Sociedades<br/>datos.gob.cl)] --> A
+    SS[(Superintendencia<br/>de Salud)] --> A2
+    SII[(Nómina SII)] --> PY[cruce_sii.py] --> A3
     subgraph n8n
       A[A · Ingesta<br/>valida RUT, excluye<br/>personas naturales,<br/>deduplica] --> T1[(Data Table<br/>empresas)]
+      A2[A2 · Ingesta<br/>sectores regulados] --> T1
+      A3[A3 · Cruce SII<br/>tamaño y rubro] --> T1
       T1 --> B[B · Dominio y<br/>enriquecimiento<br/>robots.txt, verificación,<br/>señales]
       B --> T1
       T1 --> C[C · Calificación IA<br/>Gemini + rúbrica +<br/>controles de calidad]
@@ -61,7 +65,7 @@ Con la fuente correcta, 10 veces más empresas llegan a la etapa de IA, casi tod
 
 ## Decisiones de diseño
 
-- **Lógica testeable fuera de n8n.** La lógica de cada nodo Code vive en [`n8n/code/`](n8n/code) y [`lib/`](lib); [`scripts/build_code.py`](scripts/build_code.py) la inserta en el workflow. Así se prueba con `node --test` antes de subirla (34 tests). El arnés de tests anula `URL` porque el sandbox de n8n no la tiene: así se encontró un bug real.
+- **Lógica testeable fuera de n8n.** La lógica de cada nodo Code vive en [`n8n/code/`](n8n/code) y [`lib/`](lib); [`scripts/build_code.py`](scripts/build_code.py) la inserta en el workflow. Así se prueba con `node --test` antes de subirla (59 tests). El arnés de tests anula `URL` porque el sandbox de n8n no la tiene: así se encontró un bug real.
 - **Puntaje híbrido.** Las reglas deterministas (auditables) dan el puntaje base; la IA solo puede ajustarlo ±15 y debe citar evidencia. Ver [`docs/icp-rubrica.md`](docs/icp-rubrica.md).
 - **Revisión humana por defecto ante la duda.** Va a revisión todo lo que tenga JSON inválido, evidencia que no sea una URL visitada, confianza < 0,6, error de la API o un sitio que la IA considera ajeno.
 - **Verificación estricta del dominio.** Una primera versión aceptaba coincidencias de una sola palabra (`gonzalez.cl`, `minera.cl`): 43 falsos positivos en una simulación. La versión actual exige RUT, marca de una palabra en el título o la frase completa del nombre, y descarta dominios en venta o compartidos.
@@ -74,24 +78,46 @@ Con la fuente correcta, 10 veces más empresas llegan a la etapa de IA, casi tod
 
 ## Métricas
 
-Resultados de 3 corridas reales (7 de octubre de 2026, archivo RES 2018). Reporte completo y gráficos en [`analysis/output/reporte.md`](analysis/output/reporte.md).
+Resultados reales del 7 al 11 de octubre de 2026: 3 corridas de la fase 1 (archivo RES 2018) y 1 de la fase 2 (Superintendencia de Salud), más reintentos de calificación cuando la cuota gratuita de Gemini se agotó. Reporte completo y gráficos en [`analysis/output/reporte.md`](analysis/output/reporte.md).
 
-| Métrica | Valor |
+**Embudo total**
+
+| Etapa | Empresas |
 |---|---|
-| Filas del RES procesadas por corrida | 101.998 (6–15 s por corrida) |
-| Excluidas por ser personas naturales, EIRL o capital atípico | 30.245 |
-| Empresas ingresadas (únicas) | 200 · 0 duplicadas en la tabla |
-| Duplicados detectados y evitados en re-ejecuciones | 272 |
-| Con dominio verificado | 13 (6,5 %) |
-| Calificadas por la IA | 13 → **2 calificadas**, 11 a revisión humana |
-| Sitios que la IA detectó como **ajenos** a la empresa | 5 (dominio en venta, clínica de EE.UU., tienda catalana, página vacía, inmobiliaria cuyo sitio es una clínica) |
-| Respuestas de la IA con JSON válido | 100 % de las recibidas (los fallos fueron 503/429 de la API → revisión) |
-| Empresas con sitio **sin política de privacidad** | 13 de 13 · ninguna cita la Ley 21.719 |
-| Tiempo de calificación | ~25 s por empresa (pausa para respetar el límite gratuito de la API) |
+| Ingresadas (únicas, sin duplicados en la tabla) | 234 |
+| Con sitio web verificado | 36 |
+| Evaluadas por la IA | 35 (las 35 con motivo y URL de evidencia) |
+| **Calificadas** (score ≥ 70) | **23** |
+| A revisión humana | 12 |
 
 ![Embudo](analysis/output/embudo.png)
 
-**Lectura:** el pipeline es conservador por diseño: prefiere mandar a revisión humana antes que entregar al equipo comercial una cuenta mal identificada. El cuello de botella es la fuente (pocas sociedades del RES tienen sitio), no el procesamiento.
+**Por fuente**
+
+| Métrica | Fase 1 · Registro de Empresas | Fase 2 · Superintendencia de Salud |
+|---|---|---|
+| Empresas ingresadas | 200 (de 101.998 filas; 30.245 excluidas por ser personas naturales, EIRL o capital atípico) | 34 (de 1.018 prestadores acreditados) |
+| Con sitio verificado | 13 (6,5 %) | 23 (**67,6 %**) |
+| Medianas o grandes según el SII | 7 | 31 |
+| Calificadas | 1 | **22** |
+| Sitios que la IA detectó como ajenos a la empresa | 5 | 1 |
+
+Las 23 calificadas son 22 prestadores de salud (clínicas oftalmológicas, centros de diálisis, laboratorios, un centro oncológico) y una tienda online de insumos médicos; 20 son medianas o grandes según el SII y su score promedio es 92.
+
+**Calidad y operación**
+
+| Métrica | Valor |
+|---|---|
+| Motivos de revisión humana | 5 sitios ajenos según la IA · 3 sitios mínimos · 4 con score entre 40 y 69 |
+| Respuestas de la IA con JSON válido | 100 % de las recibidas |
+| Errores de la API (429 cuota / 503 saturación) | Quedaron en revisión y se recalificaron solos en corridas posteriores; 0 pendientes al cierre |
+| Duplicados detectados y evitados en re-ejecuciones | 272 |
+| Tiempo de ingesta | 6–15 s por corrida (RES, 102 mil filas) · 40 s (Salud, 40 fichas) |
+| Tiempo de calificación | ~25–35 s por empresa (pausa para respetar el límite gratuito de la API) |
+
+**Brechas de cumplimiento observadas** (36 sitios verificados): 31 sin política de privacidad, **ninguno cita la Ley 21.719**, 12 con formularios que piden datos personales y 15 con trackers publicitarios sin banner de cookies.
+
+**Lectura:** el pipeline es conservador por diseño: prefiere mandar a revisión humana antes que entregar al equipo comercial una cuenta mal identificada. La mayor mejora no vino del modelo sino de la fuente: con el registro de prestadores de salud, 10 veces más empresas llegan a la IA y casi todas terminan calificadas.
 
 ## Cómo correrlo
 
@@ -105,7 +131,7 @@ Requisitos: n8n (probado en Docker), Node 20+, Python 3.11+, una API key de Goog
 Desarrollo local:
 
 ```bash
-node --test test/normalize.test.js test/senales.test.js test/n8n_code.test.js
+node --test
 python scripts/build_code.py n8n/sdk/B_enriquecimiento.sdk.ts --out data/raw/build/B.ts
 node scripts/simular_b.js data/raw/empresas.json 50     # simula el workflow B contra sitios reales
 python scripts/exportar_tablas.py && python analysis/metricas.py
@@ -117,6 +143,7 @@ python scripts/check_secrets.py .                       # antes de cada commit
 Este repositorio es público, así que se diseñó para no exponer nada que no lo sea:
 
 - **Fuente:** [Registro de Empresas y Sociedades](https://datos.gob.cl/dataset/363edd60-4919-4ff1-b85f-f8e14d61285a) (Subsecretaría de Economía y Empresas de Menor Tamaño), publicado en datos.gob.cl con licencia **Creative Commons Attribution (CC-BY)**. Se usan razón social, RUT de la sociedad, región, año y capital.
+- **Fase 2:** [registro de prestadores acreditados](https://www.superdesalud.gob.cl/) de la Superintendencia de Salud (de cada ficha solo RUT, razón social, tipo de establecimiento y sitio oficial; se corta antes de los datos del representante legal) y [nómina de personas jurídicas del SII](https://www.sii.cl/sobre_el_sii/nominapersonasjuridicas.html) (tramo de ventas, trabajadores y rubro, solo para los RUT del pipeline).
 - **Solo personas jurídicas.** Se descartan RUT bajo 50.000.000 (personas naturales) y las **EIRL**, porque su razón social suele ser el nombre de una persona (30.244 excluidas en el archivo 2018).
 - **Sin datos personales de terceros.** No se buscan ni guardan nombres, correos o teléfonos de personas. Del sitio solo se registran **señales** (¿tiene política de privacidad?, ¿usa cookies?) y se anota *si existe* un canal de privacidad, no cuál es.
 - **Rastreo respetuoso.** Se consulta `robots.txt` antes de visitar cada sitio, con un User-Agent que se identifica, timeouts y pausas entre solicitudes. Solo se visitan la portada y la política de privacidad.
@@ -126,7 +153,8 @@ Este repositorio es público, así que se diseñó para no exponer nada que no l
 
 ## Limitaciones y próximos pasos
 
-- **Pocas empresas del RES tienen sitio web** (11 % en las de mayor capital, ~2 % en el resto). El registro está dominado por sociedades nuevas y holdings. Próximo paso: cruzar con la nómina de personas jurídicas del SII (rubro, tramo de ventas y trabajadores) y priorizar rubros del ICP antes de buscar dominios.
+- **Pocas empresas del RES tienen sitio web** (6,5 %): el registro está dominado por sociedades nuevas y holdings. Se resolvió en la fase 2 partiendo de registros de sectores regulados; falta sumar otros sectores (fintech vía CMF, educación).
+- **Cuota gratuita de Gemini.** Con el plan gratuito se califican pocas empresas por día; los errores 429/503 quedan en revisión y se reintentan solos en la siguiente corrida, pero una corrida grande necesita una API con facturación o un modelo con más cuota.
 - La verificación por nombre es conservadora: prefiere perder empresas a asociar sitios equivocados.
 - La rúbrica asigna puntajes parecidos a sitios sin política de privacidad; con más datos etiquetados (ver [`analysis/eval_agreement.py`](analysis/eval_agreement.py)) se pueden recalibrar los pesos.
 - Integración con un CRM (HubSpot) y secuencias de contacto quedan fuera de este alcance.
