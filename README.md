@@ -50,12 +50,12 @@ La fase 1 partía del Registro de Empresas y Sociedades y solo 6,5 % de las empr
 
 **Resultado del cambio de fuente** (misma lógica de B, C y D):
 
-| Fuente | Empresas | Con sitio verificado | Medianas o grandes según el SII |
-|---|---|---|---|
-| Registro de Empresas y Sociedades (fase 1) | 200 | 13 (**6,5 %**) | 7 |
-| Superintendencia de Salud (fase 2) | 34 | 23 (**67,6 %**) | 31 |
+| Fuente | Empresas | Con sitio verificado | Medianas o grandes según el SII | Calificadas (score ≥ 70) |
+|---|---|---|---|---|
+| Registro de Empresas y Sociedades (fase 1) | 200 | 13 (**6,5 %**) | 7 | 1 |
+| Superintendencia de Salud (fase 2) | 34 | 23 (**67,6 %**) | 31 | **22** |
 
-Con la fuente correcta, 10 veces más empresas llegan a la etapa de IA y casi todas tienen un tamaño que justifica un contacto comercial. La lección: en prospección, elegir bien la fuente rinde más que afinar el modelo.
+Con la fuente correcta, 10 veces más empresas llegan a la etapa de IA, casi todas tienen un tamaño que justifica un contacto comercial y 22 de 23 terminan calificadas (con motivo y URL de evidencia citados por la IA). La lección: en prospección, elegir bien la fuente rinde más que afinar el modelo.
 
 **CMF (registro fintech):** el listado público funciona desde un navegador, pero a las solicitudes automatizadas de n8n la CMF responde con un desafío anti-bots. No se intentó evadirlo; la vía correcta es pedir el listado por sus canales oficiales o por Ley de Transparencia.
 

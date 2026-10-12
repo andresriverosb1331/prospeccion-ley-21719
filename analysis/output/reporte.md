@@ -1,6 +1,6 @@
 # Reporte de métricas del pipeline
 
-Generado desde 234 empresas y 25 corridas exportadas de n8n. Solo cifras agregadas.
+Generado desde 234 empresas y 28 corridas exportadas de n8n. Solo cifras agregadas.
 
 ## Embudo
 
@@ -9,7 +9,7 @@ Generado desde 234 empresas y 25 corridas exportadas de n8n. Solo cifras agregad
 | ingestadas | 234 |
 | con dominio verificado | 36 |
 | calificadas por IA | 35 |
-| calificadas (score >= 70) | 0 |
+| calificadas (score >= 70) | 23 |
 
 ![Embudo](embudo.png)
 
@@ -18,16 +18,17 @@ Generado desde 234 empresas y 25 corridas exportadas de n8n. Solo cifras agregad
 | estado | empresas |
 |---|---|
 | sin_dominio | 199 |
-| revision | 35 |
+| calificada | 23 |
+| revision | 12 |
 
 ## Rubros (IA)
 
 | rubro | empresas | score_promedio |
 |---|---|---|
-| otro | 32 | 64.4 |
-| salud | 1 | 75 |
-| saas_tecnologia | 1 | 49 |
-| retail_ecommerce | 1 | 55 |
+| salud | 25 | 88.8 |
+| otro | 6 | 51.7 |
+| saas_tecnologia | 2 | 57 |
+| retail_ecommerce | 2 | 70 |
 | fintech_seguros | 1 | 55 |
 
 ![Rubros (IA)](por_rubro.png)
@@ -36,8 +37,8 @@ Generado desde 234 empresas y 25 corridas exportadas de n8n. Solo cifras agregad
 
 | tramo | empresas |
 |---|---|
-| 70-100 | 12 |
-| 40-69 | 23 |
+| 70-100 | 24 |
+| 40-69 | 11 |
 | 0-39 | 1 |
 
 ![Distribución del score](distribucion_score.png)
@@ -46,10 +47,9 @@ Generado desde 234 empresas y 25 corridas exportadas de n8n. Solo cifras agregad
 
 | causa | empresas |
 |---|---|
-| error de la API de IA | 28 |
+| la IA dice que el sitio no es de la empresa | 5 |
+| score entre 40 y 69 o confianza < 0,6 | 4 |
 | sitio_minimo | 3 |
-| la IA dice que el sitio no es de la empresa | 3 |
-| score entre 40 y 69 o confianza < 0,6 | 1 |
 
 ![Motivos de revisión humana](motivos_revision.png)
 
@@ -88,6 +88,9 @@ Generado desde 234 empresas y 25 corridas exportadas de n8n. Solo cifras agregad
 | run-20261007-183708 | calificacion | 35 |  |  |  |  |  | 0 | 35 | 0 | 35 | 679.5 |
 | run-20261007-194800 | calificacion | 34 |  |  |  |  |  | 0 | 34 | 0 | 33 | 674.7 |
 | run-20261008-134547 | calificacion | 33 |  |  |  |  |  | 0 | 33 | 0 | 33 | 1006.3 |
+| run-20261009-124741 | calificacion | 28 |  |  |  |  |  | 12 | 16 | 0 | 13 | 907.4 |
+| run-20261010-134650 | calificacion | 11 |  |  |  |  |  | 9 | 2 | 0 | 4 | 223.8 |
+| run-20261011-213550 | calificacion | 2 |  |  |  |  |  | 2 | 0 | 0 | 0 | 97.8 |
 
 ## Duplicados en la ingesta
 
@@ -99,7 +102,7 @@ Generado desde 234 empresas y 25 corridas exportadas de n8n. Solo cifras agregad
 
 | origen | empresas | con_dominio | pct_dominio | medianas_o_grandes_sii | calificadas | en_revision |
 |---|---|---|---|---|---|---|
-| Registro de Empresas y Sociedades (fase 1) | 200 | 13 | 6.5 | 7 | 0 | 12 |
-| Superintendencia de Salud | 34 | 23 | 67.6 | 31 | 0 | 23 |
+| Registro de Empresas y Sociedades (fase 1) | 200 | 13 | 6.5 | 7 | 1 | 11 |
+| Superintendencia de Salud | 34 | 23 | 67.6 | 31 | 22 | 1 |
 
 ![Fase 1 vs fase 2: rendimiento por fuente](comparacion_fuentes.png)
