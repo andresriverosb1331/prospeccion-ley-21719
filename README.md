@@ -171,3 +171,7 @@ analysis/    SQL + Python de métricas y evaluación de la IA
 test/        tests (node --test)
 data/sample/ muestra pública
 ```
+
+## Licencia
+
+© 2026 Andrés Riveros. **Todos los derechos reservados.** El código se publica solo para que pueda ser revisado como muestra de trabajo; no se concede permiso para usarlo, copiarlo, modificarlo ni distribuirlo, total o parcialmente, sin autorización escrita del autor. Ver [`LICENSE`](LICENSE).
